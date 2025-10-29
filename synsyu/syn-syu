@@ -1,0 +1,1019 @@
+#!/usr/bin/env bash
+#============================================================
+# Synavera Project: Syn-Syu
+# Module: synsyu/syn-syu
+# Etiquette: Synavera Script Etiquette — Bash Profile v1.1.1
+#------------------------------------------------------------
+# Purpose:
+#   Syn-Syu orchestrates conscious package updates across
+#   pacman repositories and the Arch User Repository by
+#   delegating manifest construction to synsyu_core and
+#   executing selective upgrade strategies.
+#
+# Security / Safety Notes:
+#   - Operates with user privileges; uses sudo only for
+#     pacman helper invocations when required.
+#   - Writes logs under user-owned directories.
+#   - Requires explicit flags before touching AUR or repo state.
+#
+# Dependencies:
+#   jq, python3 (tomllib), sha256sum, synsyu_core, pacman,
+#   available AUR helpers (paru, yay, etc.).
+#
+# Operational Scope:
+#   Provides subcommands such as sync, core, update, group,
+#   aur, repo, inspect, check, clean, log, and help.
+#
+# Revision History:
+#   2025-10-28 COD  Authored Syn-Syu orchestrator (v0.1).
+#------------------------------------------------------------
+# SSE Principles Observed:
+#   - set -euo pipefail for predictable exits
+#   - Explicit logging of all significant actions
+#   - Structured modules for helpers, logging, and manifest IO
+#============================================================
+
+set -euo pipefail
+IFS=$'\n\t'
+
+SESSION_STAMP="$(date -u +"%Y-%m-%d_%H-%M-%S")"
+readonly SESSION_STAMP
+
+SCRIPT_PATH="$(realpath "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+readonly SCRIPT_DIR
+
+LIB_DIR=""
+LIB_SEARCH_PATHS=("$SCRIPT_DIR/lib")
+if [ -n "${SYNSYU_LIBDIR:-}" ]; then
+  LIB_SEARCH_PATHS+=("$SYNSYU_LIBDIR")
+fi
+if [ -n "${SYN_SYU_LIBDIR:-}" ]; then
+  LIB_SEARCH_PATHS+=("$SYN_SYU_LIBDIR")
+fi
+LIB_SEARCH_PATHS+=(
+  "/usr/local/share/syn-syu"
+  "/usr/lib/syn-syu"
+  "$HOME/.local/share/syn-syu/lib"
+  "/usr/local/share/synsyu"
+  "/usr/lib/synsyu"
+  "$HOME/.local/share/synsyu/lib"
+)
+for candidate in "${LIB_SEARCH_PATHS[@]}"; do
+  if [ -f "$candidate/logging.sh" ]; then
+    LIB_DIR="$candidate"
+    break
+  fi
+done
+
+if [ -z "$LIB_DIR" ]; then
+  printf 'Syn-Syu cannot locate its library modules. Set SYN_SYU_LIBDIR (or legacy SYNSYU_LIBDIR) to the directory containing logging.sh.\n' >&2
+  exit 120
+fi
+
+# shellcheck source=/dev/null
+. "$LIB_DIR/logging.sh"
+# shellcheck source=/dev/null
+. "$LIB_DIR/helpers.sh"
+# shellcheck source=/dev/null
+. "$LIB_DIR/manifest.sh"
+
+readonly SYN_CORE_BIN="${SYN_CORE_BIN:-/usr/local/bin/synsyu_core}"
+readonly DEFAULT_CONFIG_PATH="$HOME/.config/syn-syu/config.toml"
+readonly DEFAULT_GROUPS_PATH="$HOME/.config/syn-syu/groups.toml"
+readonly DEFAULT_MANIFEST="/tmp/syn-syu_manifest.json"
+
+CONFIG_PATH=""
+GROUPS_PATH="$DEFAULT_GROUPS_PATH"
+SYN_MANIFEST_PATH="$DEFAULT_MANIFEST"
+LOG_VERBOSE=0
+REBUILD_MANIFEST=0
+DRY_RUN=0
+NO_AUR=0
+NO_REPO=0
+NO_CONFIRM=1
+QUIET=0
+JSON_OUTPUT=0
+declare -a INCLUDE_PATTERNS=()
+declare -a EXCLUDE_PATTERNS=()
+AUR_HELPER=""
+BATCH_SIZE=10
+SNAPSHOTS_ENABLED=0
+SNAPSHOT_PRE_CMD=""
+SNAPSHOT_POST_CMD=""
+SNAPSHOT_REQUIRE_SUCCESS=0
+MIN_FREE_SPACE_MB=0
+DISK_CHECK=0
+DISK_MARGIN_MB=200
+CLEAN_KEEP_VERSIONS=2
+CLEAN_REMOVE_ORPHANS=0
+CLEAN_CHECK_PACNEW=1
+COMMAND=""
+COMMAND_ARGS=()
+HELPER_PRIORITY=()
+
+trap 'handle_exit $?' EXIT
+trap 'handle_interrupt' INT
+
+#--- main
+main() {
+  ensure_prerequisites
+  parse_cli "$@"
+  load_config
+  log_init
+  if [ "$NO_AUR" = "1" ] && [ "$NO_REPO" = "1" ]; then
+    log_error "E103" "Cannot disable both repo and AUR operations"
+    exit 103
+  fi
+  detect_helpers
+  dispatch_command
+}
+
+#--- ensure_prerequisites
+ensure_prerequisites() {
+  if ! command -v jq >/dev/null 2>&1; then
+    printf 'Syn-Syu requires jq in PATH.\n' >&2
+    exit 100
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf 'Syn-Syu requires python3 for configuration parsing.\n' >&2
+    exit 100
+  fi
+}
+
+#--- parse_cli
+parse_cli() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --config)
+        CONFIG_PATH="$2"
+        shift 2
+        ;;
+      --manifest)
+        SYN_MANIFEST_PATH="$2"
+        shift 2
+        ;;
+      --rebuild)
+        REBUILD_MANIFEST=1
+        shift
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        shift
+        ;;
+      --no-aur)
+        NO_AUR=1
+        shift
+        ;;
+      --no-repo)
+        NO_REPO=1
+        shift
+        ;;
+      --verbose)
+        LOG_VERBOSE=1
+        shift
+        ;;
+      --quiet|-q)
+        QUIET=1
+        shift
+        ;;
+      --json)
+        JSON_OUTPUT=1
+        shift
+        ;;
+      --confirm)
+        NO_CONFIRM=0
+        shift
+        ;;
+      --noconfirm)
+        NO_CONFIRM=1
+        shift
+        ;;
+      --helper)
+        AUR_HELPER="$2"
+        shift 2
+        ;;
+      --include)
+        INCLUDE_PATTERNS+=("$2")
+        shift 2
+        ;;
+      --exclude)
+        EXCLUDE_PATTERNS+=("$2")
+        shift 2
+        ;;
+      --batch)
+        BATCH_SIZE="$2"
+        shift 2
+        ;;
+      --groups)
+        GROUPS_PATH="$2"
+        shift 2
+        ;;
+      --help|-h)
+        COMMAND="help"
+        shift
+        break
+        ;;
+      --version)
+        COMMAND="version"
+        shift
+        break
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        printf 'Unknown flag %s\n' "$1" >&2
+        exit 101
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  if [ -z "$COMMAND" ]; then
+    if [ $# -gt 0 ]; then
+      COMMAND="$1"
+      shift
+    else
+      COMMAND="sync"
+    fi
+  fi
+
+  COMMAND_ARGS=("$@")
+}
+
+#--- load_config
+load_config() {
+  if [ -z "$CONFIG_PATH" ]; then
+    CONFIG_PATH="$DEFAULT_CONFIG_PATH"
+  fi
+
+  if [ ! -f "$CONFIG_PATH" ]; then
+    HELPER_PRIORITY=($(printf '%s\n' "${HELPER_CANDIDATES[@]}"))
+    return
+  fi
+
+  local py_output
+  if ! py_output="$(CONFIG_PATH="$CONFIG_PATH" python3 - <<'PY'
+import json
+import os
+import sys
+import tomllib
+
+config_path = os.environ.get("CONFIG_PATH")
+try:
+    with open(config_path, "rb") as handle:
+        data = tomllib.load(handle)
+except FileNotFoundError:
+    sys.exit(1)
+
+core = data.get("core", {})
+helpers = data.get("helpers", {})
+snapshots = data.get("snapshots", {})
+safety = data.get("safety", {})
+clean = data.get("clean", {})
+
+settings = {
+    "manifest": core.get("manifest_path", ""),
+    "helper_priority": helpers.get("priority", []),
+    "log_directory": core.get("log_directory", ""),
+    "batch_size": core.get("batch_size", 10),
+    "min_free_space_mb": core.get("min_free_space_mb"),
+    "snapshots_enabled": snapshots.get("enabled", False),
+    "snapshot_pre": snapshots.get("pre_command", ""),
+    "snapshot_post": snapshots.get("post_command", ""),
+    "snapshot_require_success": snapshots.get("require_success", False),
+    "safety_disk_check": safety.get("disk_check", False),
+    "safety_disk_margin_mb": safety.get("disk_extra_margin_mb", 200),
+    "clean_keep_versions": clean.get("keep_versions", 2),
+    "clean_remove_orphans": clean.get("remove_orphans", False),
+    "clean_check_pacnew": clean.get("check_pacnew", True)
+}
+
+print(json.dumps(settings))
+PY
+)"; then
+    py_output=""
+  fi
+
+  local manifest_path helper_line log_dir batch_size
+  if [ -n "$py_output" ]; then
+    manifest_path="$(printf '%s' "$py_output" | jq -r '.manifest // ""')"
+    helper_line="$(printf '%s' "$py_output" | jq -r '.helper_priority | join(" ")')"
+    log_dir="$(printf '%s' "$py_output" | jq -r '.log_directory // ""')"
+    batch_size="$(printf '%s' "$py_output" | jq -r '.batch_size // 10')"
+    local min_free_space
+    min_free_space="$(printf '%s' "$py_output" | jq -r '.min_free_space_mb // empty')"
+    local snapshots_enabled
+    snapshots_enabled="$(printf '%s' "$py_output" | jq -r '.snapshots_enabled')"
+    local snapshot_pre snapshot_post snapshot_require
+    snapshot_pre="$(printf '%s' "$py_output" | jq -r '.snapshot_pre // ""')"
+    snapshot_post="$(printf '%s' "$py_output" | jq -r '.snapshot_post // ""')"
+    snapshot_require="$(printf '%s' "$py_output" | jq -r '.snapshot_require_success')"
+    local safety_disk_check disk_margin
+    safety_disk_check="$(printf '%s' "$py_output" | jq -r '.safety_disk_check')"
+    disk_margin="$(printf '%s' "$py_output" | jq -r '.safety_disk_margin_mb // 200')"
+    local clean_keep clean_orphans clean_pacnew
+    clean_keep="$(printf '%s' "$py_output" | jq -r '.clean_keep_versions // 2')"
+    clean_orphans="$(printf '%s' "$py_output" | jq -r '.clean_remove_orphans')"
+    clean_pacnew="$(printf '%s' "$py_output" | jq -r '.clean_check_pacnew')"
+
+    if [ -n "$manifest_path" ] && [ "$SYN_MANIFEST_PATH" = "$DEFAULT_MANIFEST" ]; then
+      SYN_MANIFEST_PATH="$manifest_path"
+    fi
+
+    if [ -n "$helper_line" ]; then
+      # shellcheck disable=SC2206
+      HELPER_PRIORITY=($helper_line)
+    else
+      HELPER_PRIORITY=($(printf '%s\n' "${HELPER_CANDIDATES[@]}"))
+    fi
+
+    if [ -n "$log_dir" ]; then
+      LOG_DIR="$log_dir"
+    fi
+
+    if [[ "$batch_size" =~ ^[0-9]+$ ]]; then
+      BATCH_SIZE="$batch_size"
+    fi
+
+    if [[ "$min_free_space" =~ ^[0-9]+$ ]]; then
+      MIN_FREE_SPACE_MB="$min_free_space"
+    fi
+
+    if [ "$snapshots_enabled" = "true" ]; then
+      SNAPSHOTS_ENABLED=1
+    fi
+    SNAPSHOT_PRE_CMD="$snapshot_pre"
+    SNAPSHOT_POST_CMD="$snapshot_post"
+    if [ "$snapshot_require" = "true" ]; then
+      SNAPSHOT_REQUIRE_SUCCESS=1
+    fi
+
+    if [ "$safety_disk_check" = "true" ]; then
+      DISK_CHECK=1
+    fi
+    if [[ "$disk_margin" =~ ^[0-9]+$ ]]; then
+      DISK_MARGIN_MB="$disk_margin"
+    fi
+
+    if [[ "$clean_keep" =~ ^[0-9]+$ ]]; then
+      CLEAN_KEEP_VERSIONS="$clean_keep"
+    fi
+    if [ "$clean_orphans" = "true" ]; then
+      CLEAN_REMOVE_ORPHANS=1
+    fi
+    if [ "$clean_pacnew" = "false" ]; then
+      CLEAN_CHECK_PACNEW=0
+    fi
+  fi
+
+  if [ ${#HELPER_PRIORITY[@]} -eq 0 ]; then
+    HELPER_PRIORITY=($(printf '%s\n' "${HELPER_CANDIDATES[@]}"))
+  fi
+  if [ "$BATCH_SIZE" -le 0 ]; then
+    BATCH_SIZE=1
+  fi
+}
+
+#--- matches_filters
+matches_filters() {
+  local name="$1"
+  local matched=0 p
+  if [ "${#INCLUDE_PATTERNS[@]}" -gt 0 ]; then
+    matched=1
+    for p in "${INCLUDE_PATTERNS[@]}"; do
+      if [[ "$name" =~ $p ]]; then matched=0; break; fi
+    done
+    if [ $matched -ne 0 ]; then
+      return 1
+    fi
+  fi
+  for p in "${EXCLUDE_PATTERNS[@]}"; do
+    if [[ "$name" =~ $p ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+#--- run_repo_batch
+run_repo_batch() {
+  local -a pkgs=("$@")
+  [ "${#pkgs[@]}" -gt 0 ] || return 0
+  local -a args=(-S)
+  if [ "$NO_CONFIRM" = "1" ]; then
+    args+=(--noconfirm)
+  fi
+  sudo pacman "${args[@]}" "${pkgs[@]}"
+}
+
+#--- run_snapshot
+run_snapshot() {
+  local phase="$1"
+  local cmd=""
+  [ "$SNAPSHOTS_ENABLED" = "1" ] || return 0
+  case "$phase" in
+    pre) cmd="$SNAPSHOT_PRE_CMD" ;;
+    post) cmd="$SNAPSHOT_POST_CMD" ;;
+    *) return 0 ;;
+  esac
+  [ -n "$cmd" ] || return 0
+  if [ "$DRY_RUN" = "1" ] && [ "$phase" = "pre" ]; then
+    log_info "SNAPSHOT" "Dry-run mode: skipping snapshot command ($cmd)"
+    return 0
+  fi
+  log_info "SNAPSHOT" "Executing $phase snapshot command"
+  if ! bash -c "$cmd"; then
+    log_error "SNAPSHOT" "Snapshot command for phase $phase failed"
+    if [ "$SNAPSHOT_REQUIRE_SUCCESS" = "1" ]; then
+      log_finalize
+      exit 420
+    fi
+  fi
+}
+
+#--- check_disk_space
+check_disk_space() {
+  [ "$DISK_CHECK" = "1" ] || return 0
+  local required_bytes
+  required_bytes="$(jq '[.packages | to_entries[] | select(.value.update_available == true) | .value.download_size_selected] | map(select(.!=null)) | add // 0' "$SYN_MANIFEST_PATH")"
+  if [ -z "$required_bytes" ] || ! [[ "$required_bytes" =~ ^[0-9]+$ ]]; then
+    log_warn "DISK" "Unable to determine download size; skipping disk check"
+    return 0
+  fi
+  if [ "$required_bytes" -eq 0 ]; then
+    return 0
+  fi
+  local margin_bytes=$((DISK_MARGIN_MB * 1024 * 1024))
+  if [ "$MIN_FREE_SPACE_MB" -gt 0 ]; then
+    margin_bytes=$((margin_bytes + (MIN_FREE_SPACE_MB * 1024 * 1024)))
+  fi
+  local total_needed=$((required_bytes + margin_bytes))
+  local available_bytes
+  available_bytes="$(df -Pk / | awk 'NR==2 {print $4 * 1024}')"
+  if ! [[ "$available_bytes" =~ ^[0-9]+$ ]]; then
+    log_warn "DISK" "Unable to read available disk space; skipping check"
+    return 0
+  fi
+  if [ "$available_bytes" -lt "$total_needed" ]; then
+    log_error "DISK" "Insufficient disk space: need $total_needed bytes (including margin), have $available_bytes"
+    log_finalize
+    exit 421
+  fi
+  log_info "DISK" "Disk space check passed (required=$total_needed available=$available_bytes)"
+}
+
+#--- check_pacnew
+check_pacnew() {
+  [ "$CLEAN_CHECK_PACNEW" = "1" ] || return 0
+  if [ "$DRY_RUN" = "1" ]; then
+    return 0
+  fi
+  local output=""
+  if command -v pacdiff >/dev/null 2>&1; then
+    output="$(PACDIFF_PAGER=cat PACDIFF_EDITOR=cat PACDIFF_DIFF=cat pacdiff --output 2>/dev/null || true)"
+  else
+    output="$(find /etc -type f \( -name '*.pacnew' -o -name '*.pacsave' \) 2>/dev/null)"
+  fi
+  if [ -n "$output" ]; then
+    log_warn "PACNEW" "Configuration files awaiting review:\n$output"
+    if [ "$QUIET" != "1" ]; then
+      printf '-> Configuration updates detected (pacnew/pacsave files):\n'
+      printf '%s\n' "$output"
+    fi
+  else
+    log_info "PACNEW" "No pacnew/pacsave files detected."
+  fi
+}
+
+#--- dispatch_command
+dispatch_command() {
+  case "$COMMAND" in
+    core)
+      cmd_core
+      ;;
+    sync)
+      cmd_sync
+      ;;
+    aur)
+      NO_REPO=1
+      cmd_sync
+      ;;
+    repo)
+      NO_AUR=1
+      cmd_sync
+      ;;
+    update)
+      cmd_update "${COMMAND_ARGS[@]}"
+      ;;
+    group)
+      cmd_group "${COMMAND_ARGS[@]}"
+      ;;
+    inspect)
+      cmd_inspect "${COMMAND_ARGS[@]}"
+      ;;
+    check)
+      cmd_check
+      ;;
+    clean)
+      cmd_clean
+      ;;
+    log)
+      cmd_log
+      ;;
+    export)
+      cmd_export "${COMMAND_ARGS[@]}"
+      ;;
+    help)
+      cmd_help
+      ;;
+    version)
+      cmd_version
+      ;;
+    *)
+      log_error "E102" "Unknown command $COMMAND"
+      cmd_help
+      exit 102
+      ;;
+  esac
+}
+
+#--- cmd_core
+cmd_core() {
+  if [ "$DRY_RUN" = "1" ]; then
+    if ! command -v "$SYN_CORE_BIN" >/dev/null 2>&1; then
+      log_error "E301" "synsyu_core binary not found"
+      exit 301
+    fi
+    local args=("--manifest" "$SYN_MANIFEST_PATH" "--dry-run")
+    if [ -n "$CONFIG_PATH" ] && [ -f "$CONFIG_PATH" ]; then
+      args+=("--config" "$CONFIG_PATH")
+    fi
+    if [ "$NO_AUR" = "1" ]; then
+      args+=("--no-aur")
+    fi
+    if [ "$NO_REPO" = "1" ]; then
+      args+=("--no-repo")
+    fi
+    if [ "$LOG_VERBOSE" = "1" ]; then
+      args+=("--verbose")
+    fi
+    "$SYN_CORE_BIN" "${args[@]}" || exit $?
+  else
+    manifest_rebuild
+  fi
+}
+
+#--- cmd_sync
+cmd_sync() {
+  manifest_require
+  log_info "SYNC" "Commencing orchestrated upgrade"
+  run_snapshot "pre"
+  check_disk_space
+  local helper
+  helper="$(select_helper || true)"
+  if [ -n "$AUR_HELPER" ]; then
+    helper="$AUR_HELPER"
+  fi
+  if [ -z "$helper" ] && [ "$NO_AUR" = "0" ]; then
+    log_warn "HELPER" "No AUR helper detected; AUR updates disabled"
+    NO_AUR=1
+  fi
+
+  local total processed failed
+  total=0
+  processed=0
+  failed=0
+  declare -a repo_batch=()
+  while IFS='|' read -r pkg source target; do
+    [ -z "$pkg" ] && continue
+    if ! matches_filters "$pkg"; then
+      continue
+    fi
+    total=$((total + 1))
+    if [ "$DRY_RUN" = "1" ]; then
+      [ "$QUIET" = "1" ] || printf -- '-> [%d] %s via %s -> %s (dry-run)\n' "$total" "$pkg" "$source" "$target"
+      continue
+    fi
+    case "$source" in
+      PACMAN|Pacman|PACMAN)
+        repo_batch+=("$pkg")
+        if [ "${#repo_batch[@]}" -ge "$BATCH_SIZE" ]; then
+          if ! run_repo_batch "${repo_batch[@]}"; then
+            log_warn "UPDATE" "Failed repo batch: ${repo_batch[*]}"
+            failed=$((failed + ${#repo_batch[@]}))
+          else
+            processed=$((processed + ${#repo_batch[@]}))
+          fi
+          repo_batch=()
+        fi
+        ;;
+      *)
+        if ! execute_update "$pkg" "$source" "$target" "$helper"; then
+          log_warn "UPDATE" "Failed to update $pkg"
+          failed=$((failed + 1))
+        else
+          processed=$((processed + 1))
+        fi
+        ;;
+    esac
+  done < <(manifest_updates_stream || true)
+
+  if [ "${#repo_batch[@]}" -gt 0 ] && [ "$DRY_RUN" = "0" ]; then
+    if ! run_repo_batch "${repo_batch[@]}"; then
+      log_warn "UPDATE" "Failed repo batch: ${repo_batch[*]}"
+      failed=$((failed + ${#repo_batch[@]}))
+    else
+      processed=$((processed + ${#repo_batch[@]}))
+    fi
+  fi
+
+  log_info "SUMMARY" "Updates processed=$processed failed=$failed"
+  [ "$QUIET" = "1" ] || printf -- '-> System integrity sweep complete.\n'
+  [ "$QUIET" = "1" ] || printf -- '-> Processed: %s (failed %s)\n' "$processed" "$failed"
+  if [ "$DRY_RUN" = "1" ]; then
+    [ "$QUIET" = "1" ] || printf -- '-> Dry-run completed; no changes applied.\n'
+  fi
+  [ "$QUIET" = "1" ] || printf -- '-> Log stored at: %s\n' "$LOG_PATH"
+  if [ "$DRY_RUN" = "0" ]; then
+    check_pacnew
+    run_snapshot "post"
+  fi
+}
+
+#--- execute_update
+execute_update() {
+  local pkg="$1" source="$2" target="$3" helper="$4"
+  case "$source" in
+    PACMAN|Pacman|PACMAN)
+      if [ "$NO_REPO" = "1" ]; then
+        log_info "SKIP" "Repo updates disabled; skipping $pkg"
+        return 0
+      fi
+      # Security: requires sudo to install repo package updates.
+      local -a args=(-S)
+      [ "$NO_CONFIRM" = "1" ] && args+=(--noconfirm)
+      sudo pacman "${args[@]}" "$pkg"
+      ;;
+    AUR|Aur)
+      if [ "$NO_AUR" = "1" ]; then
+        log_info "SKIP" "AUR updates disabled; skipping $pkg"
+        return 0
+      fi
+      if [ -z "$helper" ]; then
+        log_error "E401" "No helper available for $pkg"
+        return 1
+      fi
+      # Security: helper executes as invoking user; it will escalate internally if needed.
+      local -a hargs=(-S)
+      [ "$NO_CONFIRM" = "1" ] && hargs+=(--noconfirm)
+      "$helper" "${hargs[@]}" "$pkg"
+      ;;
+    LOCAL|Local)
+      log_info "SKIP" "Package $pkg managed locally"
+      return 0
+      ;;
+    *)
+      log_warn "SKIP" "Unknown source $source for $pkg"
+      return 0
+      ;;
+  esac
+}
+
+#--- cmd_update
+cmd_update() {
+  if [ $# -eq 0 ]; then
+    log_error "E201" "update requires at least one package"
+    exit 201
+  fi
+  REBUILD_MANIFEST=1
+  manifest_require
+  declare -A requested=()
+  local pkg
+  for pkg in "$@"; do
+    requested["$pkg"]=1
+    log_info "SELECT" "Targeting $pkg"
+  done
+  local helper
+  helper="$(select_helper || true)"
+  if [ -n "$AUR_HELPER" ]; then
+    helper="$AUR_HELPER"
+  fi
+  while IFS='|' read -r pkg source target flag; do
+    [ -z "$pkg" ] && continue
+    if ! matches_filters "$pkg"; then
+      continue
+    fi
+    if [ -z "${requested[$pkg]:-}" ]; then
+      continue
+    fi
+    if [ "$flag" != "true" ]; then
+      log_info "SKIP" "No update available for $pkg"
+      continue
+    fi
+    if [ "$DRY_RUN" = "1" ]; then
+      [ "$QUIET" = "1" ] || printf -- '-> %s via %s -> %s (dry-run)\n' "$pkg" "$source" "$target"
+      continue
+    fi
+    execute_update "$pkg" "$source" "$target" "$helper"
+  done < <(manifest_packages_stream || true)
+}
+
+#--- cmd_group
+cmd_group() {
+  local group="$1"
+  if [ -z "$group" ]; then
+    log_error "E202" "group command requires a group name"
+    exit 202
+  fi
+  if [ ! -f "$GROUPS_PATH" ]; then
+    log_error "E203" "Group configuration missing at $GROUPS_PATH"
+    exit 203
+  fi
+  local packages
+  packages="$(GROUPS_PATH="$GROUPS_PATH" GROUP_NAME="$group" python3 - <<'PY'
+import json
+import os
+import sys
+import tomllib
+
+groups_path = os.environ.get("GROUPS_PATH")
+target = os.environ.get("GROUP_NAME")
+
+try:
+    with open(groups_path, "rb") as handle:
+        data = tomllib.load(handle)
+except FileNotFoundError:
+    sys.exit(1)
+
+group = data.get(target)
+if not group:
+    sys.exit(2)
+
+print(" ".join(group))
+PY
+  )"
+  case $? in
+    0)
+      ;;
+    1)
+      log_error "E204" "Failed to read $GROUPS_PATH"
+      exit 204
+      ;;
+    2)
+      log_error "E205" "Unknown group $group"
+      exit 205
+      ;;
+  esac
+  if [ -z "$packages" ]; then
+    log_warn "GROUP" "Group $group has no packages"
+    return 0
+  fi
+  cmd_update $packages
+}
+
+#--- cmd_inspect
+cmd_inspect() {
+  local pkg="$1"
+  if [ -z "$pkg" ]; then
+    log_error "E301" "inspect requires a package name"
+    exit 301
+  fi
+  manifest_require
+  log_info "INSPECT" "Inspecting $pkg"
+  local output
+  if [ "$JSON_OUTPUT" = "1" ]; then
+    output="$(jq -c --arg pkg "$pkg" '.packages[$pkg] // {}' "$SYN_MANIFEST_PATH" 2>/dev/null || true)"
+  else
+    output="$(manifest_inspect "$pkg" || true)"
+  fi
+  if [ -z "$output" ]; then
+    printf 'No manifest data for %s\n' "$pkg"
+  else
+    printf '%s\n' "$output"
+  fi
+}
+
+#--- cmd_check
+cmd_check() {
+  manifest_require
+  if [ "$JSON_OUTPUT" = "1" ]; then
+    jq -c '{metadata: .metadata, updates: (.packages | to_entries | map(select(.value.update_available==true) | {key, value}))}' "$SYN_MANIFEST_PATH" || true
+  else
+    printf -- '-> Manifest summary\n'
+    manifest_summary || log_warn "MANIFEST" "Unable to summarize manifest"
+  fi
+}
+
+#--- cmd_export
+cmd_export() {
+  local format="json"
+  local output=""
+  local include_repo=1
+  local include_aur=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --format)
+        format="$2"
+        shift 2
+        ;;
+      --output|-o)
+        output="$2"
+        shift 2
+        ;;
+      --repo-only)
+        include_aur=0
+        shift
+        ;;
+      --aur-only)
+        include_repo=0
+        shift
+        ;;
+      --json)
+        format="json"
+        shift
+        ;;
+      --plain)
+        format="plain"
+        shift
+        ;;
+      *)
+        log_error "EXPORT" "Unknown option $1"
+        return 1
+        ;;
+    esac
+  done
+
+  if [ "$include_repo" -eq 0 ] && [ "$include_aur" -eq 0 ]; then
+    include_repo=1
+    include_aur=1
+  fi
+
+  local repo_list="" aur_list=""
+  if [ "$include_repo" -eq 1 ]; then
+    repo_list="$(pacman -Qqen 2>/dev/null || true)"
+  fi
+  if [ "$include_aur" -eq 1 ]; then
+    aur_list="$(pacman -Qqem 2>/dev/null || true)"
+  fi
+
+  local data=""
+  case "$format" in
+    json|JSON)
+      local host="${HOSTNAME:-$(uname -n)}"
+      data="$(jq -n --arg repo "$repo_list" --arg aur "$aur_list" --arg host "$host" '{
+        generated_at: (now | strftime("%Y-%m-%dT%H:%M:%SZ")),
+        host: $host,
+        repo: ($repo | split("\n") | map(select(length>0))),
+        aur: ($aur | split("\n") | map(select(length>0)))
+      }')"
+      ;;
+    plain|text)
+      local timestamp
+      timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+      data+=$'# Syn-Syu package export\n'
+      data+="# Generated at: $timestamp\n"
+      if [ "$include_repo" -eq 1 ]; then
+        data+=$'\n[repo]\n'
+        if [ -n "$repo_list" ]; then
+          data+="$repo_list\n"
+        fi
+      fi
+      if [ "$include_aur" -eq 1 ]; then
+        data+=$'\n[aur]\n'
+        if [ -n "$aur_list" ]; then
+          data+="$aur_list\n"
+        fi
+      fi
+      ;;
+    *)
+      log_error "EXPORT" "Unknown format: $format"
+      return 1
+      ;;
+  esac
+
+  if [ -n "$output" ]; then
+    printf '%s' "$data" >"$output"
+    log_info "EXPORT" "Wrote export to $output"
+  else
+    printf '%s' "$data"
+    if [ "$format" = "json" ] || [ "$format" = "JSON" ]; then
+      printf '\n'
+    fi
+  fi
+}
+
+#--- cmd_clean
+cmd_clean() {
+  log_info "CLEAN" "Pruning cache and orphans"
+  if command -v paccache >/dev/null 2>&1; then
+    if ! sudo paccache -rk "$CLEAN_KEEP_VERSIONS"; then
+      log_warn "CLEAN" "paccache failed; falling back to pacman -Sc"
+      sudo pacman -Sc --noconfirm || log_warn "CLEAN" "Failed to prune pacman cache"
+    fi
+  else
+    log_warn "CLEAN" "paccache not available; using pacman -Sc"
+    sudo pacman -Sc --noconfirm || log_warn "CLEAN" "Failed to prune pacman cache"
+  fi
+
+  if [ "$CLEAN_REMOVE_ORPHANS" = "1" ]; then
+    local orphan_file="/tmp/syn-syu_orphans.txt"
+    sudo pacman -Qtdq >"$orphan_file" 2>/dev/null || true
+    if [ -s "$orphan_file" ]; then
+      mapfile -t _syn_syu_orphans <"$orphan_file"
+      if [ "${#_syn_syu_orphans[@]}" -gt 0 ] && sudo pacman -Rns --noconfirm "${_syn_syu_orphans[@]}"; then
+        log_info "CLEAN" "Removed orphaned packages"
+      else
+        log_warn "CLEAN" "Failed to remove orphaned packages"
+      fi
+      unset _syn_syu_orphans
+    else
+      log_info "CLEAN" "No orphaned packages detected"
+    fi
+    rm -f "$orphan_file"
+    rm -f /tmp/synsyu_orphans.txt
+  fi
+
+  if [ -d "$LOG_DIR" ]; then
+    find "$LOG_DIR" -maxdepth 1 -type f -name 'installer_*.log*' -mtime +30 -delete 2>/dev/null || true
+  fi
+}
+
+#--- cmd_log
+cmd_log() {
+  local dir="${LOG_DIR:-$HOME/.local/share/syn-syu}"
+  if [ ! -d "$dir" ]; then
+    printf 'No logs found in %s\n' "$dir"
+    return 0
+  fi
+  ls -1t "$dir"/*.log 2>/dev/null | head -n 10
+}
+
+#--- cmd_help
+cmd_help() {
+  cat <<'EOF'
+Syn-Syu — Conscious package orchestration
+
+Usage: syn-syu [flags] <command> [args]
+
+Commands:
+  sync              Update all packages per manifest
+  core              Rebuild manifest via synsyu_core
+  aur               Update only AUR packages
+  repo              Update only repo packages
+  update <pkgs...>  Update specific packages
+  group <name>      Update package group defined in groups.toml
+  inspect <pkg>     Show manifest detail for package
+  check             Summarize manifest contents
+  clean             Prune caches and remove orphans
+  log               List recent Syn-Syu log files
+  export            Export package lists for replication
+  help              Display this help message
+  version           Show version information
+
+Flags:
+  --config <path>   Use alternate configuration file
+  --manifest <path> Override manifest location
+  --rebuild         Force manifest rebuild before command
+  --dry-run         Simulate actions without applying
+  --no-aur          Disable AUR operations
+  --no-repo         Disable repo operations
+  --verbose         Stream logs to stderr
+  --groups <path>   Override group configuration path
+  --quiet, -q       Suppress non-essential output
+  --json            JSON output for check/inspect
+  --confirm         Ask for confirmation in helpers (drop --noconfirm)
+  --noconfirm       Force non-interactive operations (default)
+  --helper <name>   Force a specific AUR helper
+  --include <regex> Include only packages matching regex (repeatable)
+  --exclude <regex> Exclude packages matching regex (repeatable)
+  --batch <N>       Batch size for repo installs (default from config or 10)
+EOF
+}
+
+#--- cmd_version
+cmd_version() {
+  printf 'Syn-Syu orchestrator 0.1\n'
+}
+
+#--- handle_exit
+handle_exit() {
+  local status="$1"
+  if [ "$status" -ne 0 ]; then
+    log_error "EXIT" "Syn-Syu exited with status $status"
+  else
+    log_info "EXIT" "Syn-Syu completed successfully"
+  fi
+  log_finalize
+}
+
+#--- handle_interrupt
+handle_interrupt() {
+  log_warn "INT" "Interrupt received; aborting"
+}
+
+main "$@"

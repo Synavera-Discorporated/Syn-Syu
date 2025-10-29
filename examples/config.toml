@@ -1,0 +1,29 @@
+[aur]
+base_url = "https://aur.archlinux.org/rpc/"
+max_args = 50
+max_retries = 3
+timeout = 10
+
+[core]
+manifest_path = "/tmp/syn-syu_manifest.json"
+log_directory = "~/.local/share/syn-syu/logs"
+batch_size = 10
+min_free_space_mb = 0
+
+[helpers]
+priority = ["paru", "yay", "trizen", "pikaur"]
+
+[snapshots]
+enabled = false
+pre_command = "sudo snapper create --description 'Syn-Syu pre-update'"
+post_command = ""
+require_success = false
+
+[safety]
+disk_check = true
+disk_extra_margin_mb = 200
+
+[clean]
+keep_versions = 2
+remove_orphans = false
+check_pacnew = true
