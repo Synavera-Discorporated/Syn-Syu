@@ -36,7 +36,15 @@ manifest_require() {
 
 #--- manifest_rebuild
 manifest_rebuild() {
-  if ! command -v "$SYN_CORE_BIN" >/dev/null 2>&1; then
+  local core_bin="$SYN_CORE_BIN"
+  if [ ! -x "$core_bin" ]; then
+    local discovered
+    discovered="$(command -v synsyu_core 2>/dev/null || true)"
+    if [ -n "$discovered" ]; then
+      core_bin="$discovered"
+    fi
+  fi
+  if [ ! -x "$core_bin" ]; then
     log_error "E301" "synsyu_core binary not found at $SYN_CORE_BIN"
     return 1
   fi
@@ -58,7 +66,7 @@ manifest_rebuild() {
     args+=("--min-free-gb" "$(bytes_to_gb_string "$MIN_FREE_SPACE_BYTES")")
   fi
 
-  if ! "$SYN_CORE_BIN" "${args[@]}"; then
+  if ! "$core_bin" "${args[@]}"; then
     log_error "E304" "synsyu_core invocation failed"
     return 1
   fi

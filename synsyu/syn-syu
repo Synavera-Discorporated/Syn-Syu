@@ -78,7 +78,8 @@ fi
 # shellcheck source=/dev/null
 . "$LIB_DIR/manifest.sh"
 
-readonly SYN_CORE_BIN="${SYN_CORE_BIN:-/usr/local/bin/synsyu_core}"
+# Prefer env override > PATH discovery > distro path
+readonly SYN_CORE_BIN="${SYN_CORE_BIN:-$(command -v synsyu_core 2>/dev/null || echo /usr/bin/synsyu_core)}"
 readonly DEFAULT_CONFIG_PATH="$HOME/.config/syn-syu/config.toml"
 readonly DEFAULT_GROUPS_PATH="$HOME/.config/syn-syu/groups.toml"
 readonly DEFAULT_MANIFEST="/tmp/syn-syu_manifest.json"
@@ -781,8 +782,16 @@ dispatch_command() {
 #--- cmd_core
 cmd_core() {
   if [ "$DRY_RUN" = "1" ]; then
-    if ! command -v "$SYN_CORE_BIN" >/dev/null 2>&1; then
-      log_error "E301" "synsyu_core binary not found"
+    local core_bin="$SYN_CORE_BIN"
+    if [ ! -x "$core_bin" ]; then
+      local discovered
+      discovered="$(command -v synsyu_core 2>/dev/null || true)"
+      if [ -n "$discovered" ]; then
+        core_bin="$discovered"
+      fi
+    fi
+    if [ ! -x "$core_bin" ]; then
+      log_error "E301" "synsyu_core binary not found at $SYN_CORE_BIN"
       exit 301
     fi
     local args=("--manifest" "$SYN_MANIFEST_PATH" "--dry-run")
@@ -801,7 +810,7 @@ cmd_core() {
     if [ "${MIN_FREE_SPACE_BYTES:-0}" -gt 0 ]; then
       args+=("--min-free-gb" "$(bytes_to_gb_string "$MIN_FREE_SPACE_BYTES")")
     fi
-    "$SYN_CORE_BIN" "${args[@]}" || exit $?
+    "$core_bin" "${args[@]}" || exit $?
   else
     manifest_rebuild
   fi

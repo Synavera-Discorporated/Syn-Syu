@@ -74,14 +74,14 @@ CLI flags such as `--config`, `--include`, `--exclude`, `--dry-run`,
 
 ## Usage
 
-Common entry points:
+Common entry points (both `syn-syu` and `synsyu` work):
 
 ```bash
-syn-syu            # Sync repo metadata, rebuild manifest, prompt for updates
-syn-syu --dry-run  # Preview updates without making changes
-syn-syu update <pkg>...
-syn-syu group <name>
-syn-syu clean
+synsyu            # Sync repo metadata, rebuild manifest, prompt for updates
+synsyu --dry-run  # Preview updates without making changes
+synsyu update <pkg>...
+synsyu group <name>
+synsyu clean
 ```
 
 Use `syn-syu --help` for the full command set, including manifest inspection,
@@ -102,3 +102,7 @@ cargo build --release
 Bash code follows the Synavera Script Etiquette guidelines (see `docs/`).
 Contributions should include appropriate logging and remain shellchecked where
 possible.
+
+## License
+
+Apache License 2.0. Arch packages use the common license from the licenses package. See your system’s common licenses directory or the official text: https://www.apache.org/licenses/LICENSE-2.0
