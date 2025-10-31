@@ -1,2 +1,16 @@
 # Local reference docs (not for distribution)
 docs/enhancing_syn-syu
+
+# Build outputs and packaging artifacts
+/target/
+/pkg/
+/src/
+/syn-syu/
+syn-syu-*.pkg.tar.*
+syn-syu-debug-*.pkg.tar.*
+
+# Editors and OS junk
+.DS_Store
+.idea/
+.vscode/
+*~
