@@ -125,18 +125,38 @@ manifest_summary() {
   if [ ! -f "$SYN_MANIFEST_PATH" ]; then
     return 1
   fi
-  jq -r '
-    "Packages: \(.metadata.total_packages)" ,
-    "Repo candidates: \(.metadata.repo_candidates)",
-    "AUR candidates: \(.metadata.aur_candidates)",
-    "Updates available: \(.metadata.updates_available)",
-    "Download size (bytes): \(.metadata.download_size_total // 0)",
-    "Build size (bytes): \(.metadata.build_size_total // 0)",
-    "Install size (bytes): \(.metadata.install_size_total // 0)",
-    "Transient size (bytes): \(.metadata.transient_size_total // 0)",
-    "Buffer (bytes): \(.metadata.min_free_bytes // 0)",
-    "Required (bytes): \(.metadata.required_space_total // 0)",
-    "Available (bytes): \(.metadata.available_space_bytes // 0)",
-    ("Checked path: " + (.metadata.space_checked_path // ""))
-  ' "$SYN_MANIFEST_PATH"
+  local summary
+  summary="$(jq -r '
+    [
+      .metadata.total_packages,
+      .metadata.repo_candidates,
+      .metadata.aur_candidates,
+      .metadata.updates_available,
+      (.metadata.download_size_total // 0),
+      (.metadata.build_size_total // 0),
+      (.metadata.install_size_total // 0),
+      (.metadata.transient_size_total // 0),
+      (.metadata.min_free_bytes // 0),
+      (.metadata.required_space_total // 0),
+      (.metadata.available_space_bytes // 0),
+      (.metadata.space_checked_path // "")
+    ] | @tsv
+  ' "$SYN_MANIFEST_PATH" 2>/dev/null || true)"
+  if [ -z "$summary" ]; then
+    return 1
+  fi
+  local pkgs repo aur updates dl build inst trans buf req avail path
+  IFS=$'\t' read -r pkgs repo aur updates dl build inst trans buf req avail path <<<"$summary"
+  printf 'Packages: %s\n' "$pkgs"
+  printf 'Repo candidates: %s\n' "$repo"
+  printf 'AUR candidates: %s\n' "$aur"
+  printf 'Updates available: %s\n' "$updates"
+  printf 'Download size (bytes): %s (~%s GB)\n' "$dl" "$(bytes_to_gb_string "$dl")"
+  printf 'Build size (bytes): %s (~%s GB)\n' "$build" "$(bytes_to_gb_string "$build")"
+  printf 'Install size (bytes): %s (~%s GB)\n' "$inst" "$(bytes_to_gb_string "$inst")"
+  printf 'Transient size (bytes): %s (~%s GB)\n' "$trans" "$(bytes_to_gb_string "$trans")"
+  printf 'Buffer (bytes): %s (~%s GB)\n' "$buf" "$(bytes_to_gb_string "$buf")"
+  printf 'Required (bytes): %s (~%s GB)\n' "$req" "$(bytes_to_gb_string "$req")"
+  printf 'Available (bytes): %s (~%s GB)\n' "$avail" "$(bytes_to_gb_string "$avail")"
+  printf 'Checked path: %s\n' "$path"
 }
