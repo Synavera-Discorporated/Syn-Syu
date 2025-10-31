@@ -9,7 +9,7 @@ depends=('bash' 'jq' 'python' 'pacman' 'sudo')
 makedepends=('rust' 'cargo' 'git')
 provides=('syn-syu' 'synsyu')
 conflicts=('syn-syu-git' 'synsyu-git')
-source=("syn-syu::git+file://${PWD}")
+source=("syn-syu::git+https://github.com/CmdDraven/Syn-Syu.git")
 sha256sums=('SKIP')
 
 build() {
