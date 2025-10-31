@@ -10,6 +10,9 @@ produce detailed logs for review.
 - Coordinates pacman and AUR helpers with explicit include/exclude filters.
 - Generates a JSON manifest via `synsyu_core` for dry runs, reporting, and disk
   safety checks.
+- Configurable logging level with time and size-based log retention policies.
+- Validates download, build, and install footprint before updates, applying a
+  configurable free-space buffer.
 - Supports guided or advanced install workflows through optional tooling.
 - Logs every action with timestamped entries to simplify auditing.
 - Provides commands for sync, targeted updates, group operations, cleaning, and
@@ -55,12 +58,19 @@ Syn-Syu looks for configuration at `~/.config/syn-syu/config.toml`. An example
 file is provided at `examples/config.toml`. Key options include:
 
 - `core.manifest_path` – output path for the generated manifest.
+- `space.min_free_gb` – reserved buffer that must remain free after updates.
+- `logging.level` – choose from `debug`, `info`, `warn`, `error`, or `none`.
+- `logging.retention_days` / `logging.retention_megabytes` – prune old logs by
+  age or aggregate size.
+- `logging.directory` – explicit log location (falls back to `core.log_directory`
+  for compatibility).
 - `helpers.priority` – ordered list of AUR helpers to try.
 - `snapshots.*` – optional pre/post commands for snapshot integrations.
-- `safety.*` – disk space guard rails.
+- `safety.disk_check` / `safety.disk_extra_margin_mb` – enable disk guards and
+  define additional safety margin before installs proceed.
 
 CLI flags such as `--config`, `--include`, `--exclude`, `--dry-run`,
-`--no-aur`, and `--no-repo` override configuration on demand.
+`--no-aur`, `--no-repo`, and `--min-free-gb` override configuration on demand.
 
 ## Usage
 

@@ -36,6 +36,7 @@ mod logger;
 mod manifest;
 mod package_info;
 mod pacman;
+mod space;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -51,6 +52,7 @@ use logger::Logger;
 use manifest::{build_manifest, write_manifest, ManifestDocument};
 use package_info::VersionInfo;
 use pacman::{enumerate_installed_packages, query_repo_versions, InstalledPackage};
+use space::{assess_default_paths, ensure_capacity, format_bytes};
 
 /// Command-line arguments for Syn-Syu-Core.
 #[derive(Debug, Parser)]
@@ -85,6 +87,9 @@ struct Cli {
     /// Enable verbose logging to stderr.
     #[arg(long, action = ArgAction::SetTrue)]
     verbose: bool,
+    /// Override minimum free space requirement in gigabytes.
+    #[arg(long = "min-free-gb", value_name = "GB")]
+    min_free_gb: Option<f64>,
 }
 
 #[tokio::main]
@@ -109,6 +114,10 @@ async fn run() -> Result<ExitCode> {
 
     let config_path = cli.config.as_deref();
     let config = SynsyuConfig::load_from_optional_path(config_path)?;
+    let min_free_bytes = cli
+        .min_free_gb
+        .map(gb_to_bytes)
+        .unwrap_or_else(|| config.min_free_bytes());
 
     let manifest_path = cli
         .manifest
@@ -184,7 +193,63 @@ async fn run() -> Result<ExitCode> {
         ),
     );
 
-    let document = build_manifest(&selected, &repo_versions, &aur_versions, &logger).await?;
+    let mut document =
+        build_manifest(&selected, &repo_versions, &aur_versions, min_free_bytes, &logger)
+            .await?;
+
+    let required_total = document.metadata.required_space_total;
+    let download_total = document.metadata.download_size_total;
+    let build_total = document.metadata.build_size_total;
+    let install_total = document.metadata.install_size_total;
+
+    let space_report = assess_default_paths()?;
+    document.metadata.available_space_bytes = space_report.available_bytes;
+    document.metadata.space_checked_path = space_report.checked_path.display().to_string();
+
+    if document.metadata.transient_size_total > 0 {
+        match ensure_capacity(
+            &space_report,
+            required_total,
+            download_total,
+            build_total,
+            install_total,
+            min_free_bytes,
+        ) {
+            Ok(_) => {
+                logger.info(
+                    "DISK",
+                    format!(
+                        "Space OK: need {} (download {} + build {} + install {} + buffer {}), have {} on {}",
+                        format_bytes(required_total),
+                        format_bytes(download_total),
+                        format_bytes(build_total),
+                        format_bytes(install_total),
+                        format_bytes(min_free_bytes),
+                        format_bytes(space_report.available_bytes),
+                        space_report.checked_path.display()
+                    ),
+                );
+            }
+            Err(message) => {
+                if cli.dry_run {
+                    logger.warn("DISK", &message);
+                } else {
+                    logger.error("DISK", &message);
+                    logger.finalize()?;
+                    return Err(SynsyuError::Runtime(message));
+                }
+            }
+        }
+    } else {
+        logger.info(
+            "DISK",
+            format!(
+                "No updates selected; available {} on {}",
+                format_bytes(space_report.available_bytes),
+                space_report.checked_path.display()
+            ),
+        );
+    }
 
     if cli.dry_run {
         print_summary(&document);
@@ -207,6 +272,14 @@ async fn run() -> Result<ExitCode> {
     logger.finalize()?;
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn gb_to_bytes(value: f64) -> u64 {
+    if value <= 0.0 {
+        0
+    } else {
+        (value * 1024.0_f64 * 1024.0_f64 * 1024.0_f64).round() as u64
+    }
 }
 
 fn filter_packages(

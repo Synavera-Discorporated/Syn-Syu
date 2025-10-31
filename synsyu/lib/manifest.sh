@@ -54,6 +54,9 @@ manifest_rebuild() {
   if [ "$LOG_VERBOSE" = "1" ]; then
     args+=("--verbose")
   fi
+  if [ "${MIN_FREE_SPACE_BYTES:-0}" -gt 0 ]; then
+    args+=("--min-free-gb" "$(bytes_to_gb_string "$MIN_FREE_SPACE_BYTES")")
+  fi
 
   if ! "$SYN_CORE_BIN" "${args[@]}"; then
     log_error "E304" "synsyu_core invocation failed"
@@ -77,6 +80,21 @@ manifest_packages_stream() {
     return 1
   fi
   jq -r '.packages | to_entries[] | "\(.key)|\(.value.source)|\(.value.newer_version)|\(.value.update_available)"' "$SYN_MANIFEST_PATH"
+}
+
+#--- manifest_package_requirements
+manifest_package_requirements() {
+  local package="$1"
+  if [ -z "$package" ]; then
+    return 1
+  fi
+  if [ ! -f "$SYN_MANIFEST_PATH" ]; then
+    return 1
+  fi
+  jq -r --arg pkg "$package" '
+    (.packages[$pkg] // empty)
+    | "\((.download_size_selected // 0))|\((.build_size_estimate // 0))|\((.install_size_estimate // .installed_size_selected // 0))|\((.transient_size_estimate // 0))"
+  ' "$SYN_MANIFEST_PATH"
 }
 
 #--- manifest_inspect
@@ -104,5 +122,13 @@ manifest_summary() {
     "Repo candidates: \(.metadata.repo_candidates)",
     "AUR candidates: \(.metadata.aur_candidates)",
     "Updates available: \(.metadata.updates_available)",
-    "Download size (bytes): \(.metadata.download_size_total // 0)"' "$SYN_MANIFEST_PATH"
+    "Download size (bytes): \(.metadata.download_size_total // 0)",
+    "Build size (bytes): \(.metadata.build_size_total // 0)",
+    "Install size (bytes): \(.metadata.install_size_total // 0)",
+    "Transient size (bytes): \(.metadata.transient_size_total // 0)",
+    "Buffer (bytes): \(.metadata.min_free_bytes // 0)",
+    "Required (bytes): \(.metadata.required_space_total // 0)",
+    "Available (bytes): \(.metadata.available_space_bytes // 0)",
+    "Checked path: \(.metadata.space_checked_path // \"\")"
+  ' "$SYN_MANIFEST_PATH"
 }

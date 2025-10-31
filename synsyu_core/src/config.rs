@@ -44,6 +44,8 @@ pub struct SynsyuConfig {
     pub core: CoreConfig,
     #[serde(default)]
     pub helpers: HelperConfig,
+    #[serde(default)]
+    pub space: SpaceConfig,
 }
 
 impl SynsyuConfig {
@@ -97,6 +99,7 @@ impl SynsyuConfig {
         self.aur = other.aur;
         self.core = other.core;
         self.helpers = other.helpers;
+        self.space = other.space;
     }
 
     /// Manifest path resolved from configuration.
@@ -118,6 +121,11 @@ impl SynsyuConfig {
     pub fn helper_priority(&self) -> &[String] {
         &self.helpers.priority
     }
+
+    /// Minimum free bytes required before operations.
+    pub fn min_free_bytes(&self) -> u64 {
+        self.space.min_free_bytes()
+    }
 }
 
 impl Default for SynsyuConfig {
@@ -126,6 +134,7 @@ impl Default for SynsyuConfig {
             aur: AurConfig::default(),
             core: CoreConfig::default(),
             helpers: HelperConfig::default(),
+            space: SpaceConfig::default(),
         }
     }
 }
@@ -197,6 +206,35 @@ impl Default for CoreConfig {
             manifest_path: Self::default_manifest_path(),
             log_directory: None,
             batch_size: Self::default_batch_size(),
+        }
+    }
+}
+
+/// Disk space requirements.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SpaceConfig {
+    #[serde(default = "SpaceConfig::default_min_free_gb")]
+    pub min_free_gb: f64,
+}
+
+impl SpaceConfig {
+    fn default_min_free_gb() -> f64 {
+        2.0
+    }
+
+    pub fn min_free_bytes(&self) -> u64 {
+        if self.min_free_gb <= 0.0 {
+            0
+        } else {
+            (self.min_free_gb * 1024.0_f64 * 1024.0_f64 * 1024.0_f64).round() as u64
+        }
+    }
+}
+
+impl Default for SpaceConfig {
+    fn default() -> Self {
+        Self {
+            min_free_gb: Self::default_min_free_gb(),
         }
     }
 }

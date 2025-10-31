@@ -8,7 +8,15 @@ timeout = 10
 manifest_path = "/tmp/syn-syu_manifest.json"
 log_directory = "~/.local/share/syn-syu/logs"
 batch_size = 10
-min_free_space_mb = 0
+
+[logging]
+directory = "~/.local/share/syn-syu/logs"
+level = "info"
+retention_days = 14
+retention_megabytes = 256
+
+[space]
+min_free_gb = 100
 
 [helpers]
 priority = ["paru", "yay", "trizen", "pikaur"]
@@ -21,7 +29,7 @@ require_success = false
 
 [safety]
 disk_check = true
-disk_extra_margin_mb = 200
+disk_extra_margin_mb = 0
 
 [clean]
 keep_versions = 2

@@ -87,6 +87,9 @@ CONFIG_PATH=""
 GROUPS_PATH="$DEFAULT_GROUPS_PATH"
 SYN_MANIFEST_PATH="$DEFAULT_MANIFEST"
 LOG_VERBOSE=0
+LOG_LEVEL="info"
+LOG_RETENTION_DAYS=0
+LOG_RETENTION_SIZE_MB=0
 REBUILD_MANIFEST=0
 DRY_RUN=0
 NO_AUR=0
@@ -102,9 +105,11 @@ SNAPSHOTS_ENABLED=0
 SNAPSHOT_PRE_CMD=""
 SNAPSHOT_POST_CMD=""
 SNAPSHOT_REQUIRE_SUCCESS=0
-MIN_FREE_SPACE_MB=0
-DISK_CHECK=0
-DISK_MARGIN_MB=200
+MIN_FREE_SPACE_BYTES=$((2 * 1024 * 1024 * 1024))
+MIN_FREE_SPACE_OVERRIDE_BYTES=""
+DISK_CHECK=1
+DISK_MARGIN_MB=0
+SPACE_CHECK_PATH="/"
 CLEAN_KEEP_VERSIONS=2
 CLEAN_REMOVE_ORPHANS=0
 CLEAN_CHECK_PACNEW=1
@@ -114,6 +119,41 @@ HELPER_PRIORITY=()
 
 trap 'handle_exit $?' EXIT
 trap 'handle_interrupt' INT
+
+#--- convert_gb_to_bytes
+convert_gb_to_bytes() {
+  local gb_input="${1:-0}"
+  python3 - "$gb_input" <<'PY'
+import sys
+try:
+    value = float(sys.argv[1])
+except (ValueError, IndexError):
+    print(0)
+    raise SystemExit
+if value <= 0:
+    print(0)
+else:
+    print(int(round(value * 1024 * 1024 * 1024)))
+PY
+}
+
+bytes_to_gb_string() {
+  local bytes_input="${1:-0}"
+  python3 - "$bytes_input" <<'PY'
+import sys
+try:
+    value = float(sys.argv[1])
+except (ValueError, IndexError):
+    print("0")
+    raise SystemExit
+if value <= 0:
+    print("0")
+else:
+    gb = value / (1024.0 * 1024.0 * 1024.0)
+    text = f"{gb:.3f}".rstrip("0").rstrip(".")
+    print(text if text else "0")
+PY
+}
 
 #--- main
 main() {
@@ -209,6 +249,21 @@ parse_cli() {
         GROUPS_PATH="$2"
         shift 2
         ;;
+      --min-free-gb)
+        if [ -z "${2:-}" ]; then
+          printf 'Option --min-free-gb requires a value.\n' >&2
+          exit 101
+        fi
+        local converted
+        converted="$(convert_gb_to_bytes "$2")"
+        if ! [[ "$converted" =~ ^[0-9]+$ ]]; then
+          printf 'Invalid value for --min-free-gb: %s\n' "$2" >&2
+          exit 101
+        fi
+        MIN_FREE_SPACE_BYTES="$converted"
+        MIN_FREE_SPACE_OVERRIDE_BYTES="$converted"
+        shift 2
+        ;;
       --help|-h)
         COMMAND="help"
         shift
@@ -275,13 +330,29 @@ helpers = data.get("helpers", {})
 snapshots = data.get("snapshots", {})
 safety = data.get("safety", {})
 clean = data.get("clean", {})
+logging = data.get("logging", {})
+space = data.get("space", {})
+
+log_directory = logging.get("directory") or core.get("log_directory", "")
+
+def to_bytes(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return 0
+    return int(round(number * 1024 * 1024 * 1024))
 
 settings = {
     "manifest": core.get("manifest_path", ""),
     "helper_priority": helpers.get("priority", []),
-    "log_directory": core.get("log_directory", ""),
+    "log_directory": log_directory,
+    "log_level": logging.get("level", ""),
+    "log_retention_days": logging.get("retention_days"),
+    "log_retention_megabytes": logging.get("retention_megabytes"),
     "batch_size": core.get("batch_size", 10),
-    "min_free_space_mb": core.get("min_free_space_mb"),
+    "space_min_free_bytes": to_bytes(space.get("min_free_gb")),
     "snapshots_enabled": snapshots.get("enabled", False),
     "snapshot_pre": snapshots.get("pre_command", ""),
     "snapshot_post": snapshots.get("post_command", ""),
@@ -299,14 +370,17 @@ PY
     py_output=""
   fi
 
-  local manifest_path helper_line log_dir batch_size
+  local manifest_path helper_line log_dir batch_size log_level retention_days retention_mb
   if [ -n "$py_output" ]; then
     manifest_path="$(printf '%s' "$py_output" | jq -r '.manifest // ""')"
     helper_line="$(printf '%s' "$py_output" | jq -r '.helper_priority | join(" ")')"
     log_dir="$(printf '%s' "$py_output" | jq -r '.log_directory // ""')"
+    log_level="$(printf '%s' "$py_output" | jq -r '.log_level // empty')"
+    retention_days="$(printf '%s' "$py_output" | jq -r '.log_retention_days // empty')"
+    retention_mb="$(printf '%s' "$py_output" | jq -r '.log_retention_megabytes // empty')"
     batch_size="$(printf '%s' "$py_output" | jq -r '.batch_size // 10')"
-    local min_free_space
-    min_free_space="$(printf '%s' "$py_output" | jq -r '.min_free_space_mb // empty')"
+    local min_free_bytes_config
+    min_free_bytes_config="$(printf '%s' "$py_output" | jq -r '.space_min_free_bytes // empty')"
     local snapshots_enabled
     snapshots_enabled="$(printf '%s' "$py_output" | jq -r '.snapshots_enabled')"
     local snapshot_pre snapshot_post snapshot_require
@@ -335,13 +409,38 @@ PY
     if [ -n "$log_dir" ]; then
       LOG_DIR="$log_dir"
     fi
+    if [ -n "$log_level" ]; then
+      local normalized
+      normalized="${log_level,,}"
+      case "$normalized" in
+        debug|info|warn|warning|error|none|off)
+          case "$normalized" in
+            warning) normalized="warn" ;;
+            off) normalized="none" ;;
+          esac
+          LOG_LEVEL="$normalized"
+          ;;
+        *)
+          printf 'Syn-Syu config: invalid logging.level "%s"; defaulting to info.\n' "$log_level" >&2
+          LOG_LEVEL="info"
+          ;;
+      esac
+    fi
+    if [[ "$retention_days" =~ ^[0-9]+$ ]]; then
+      LOG_RETENTION_DAYS="$retention_days"
+    fi
+    if [[ "$retention_mb" =~ ^[0-9]+$ ]]; then
+      LOG_RETENTION_SIZE_MB="$retention_mb"
+    fi
 
     if [[ "$batch_size" =~ ^[0-9]+$ ]]; then
       BATCH_SIZE="$batch_size"
     fi
 
-    if [[ "$min_free_space" =~ ^[0-9]+$ ]]; then
-      MIN_FREE_SPACE_MB="$min_free_space"
+    if [[ "$min_free_bytes_config" =~ ^[0-9]+$ ]]; then
+      if [ "$min_free_bytes_config" -ge 0 ]; then
+        MIN_FREE_SPACE_BYTES="$min_free_bytes_config"
+      fi
     fi
 
     if [ "$snapshots_enabled" = "true" ]; then
@@ -355,6 +454,8 @@ PY
 
     if [ "$safety_disk_check" = "true" ]; then
       DISK_CHECK=1
+    elif [ "$safety_disk_check" = "false" ]; then
+      DISK_CHECK=0
     fi
     if [[ "$disk_margin" =~ ^[0-9]+$ ]]; then
       DISK_MARGIN_MB="$disk_margin"
@@ -376,6 +477,9 @@ PY
   fi
   if [ "$BATCH_SIZE" -le 0 ]; then
     BATCH_SIZE=1
+  fi
+  if [ -n "${MIN_FREE_SPACE_OVERRIDE_BYTES:-}" ]; then
+    MIN_FREE_SPACE_BYTES="$MIN_FREE_SPACE_OVERRIDE_BYTES"
   fi
 }
 
@@ -436,35 +540,167 @@ run_snapshot() {
   fi
 }
 
+#--- format_bytes
+format_bytes() {
+  local bytes="${1:-0}"
+  if ! [[ "$bytes" =~ ^[0-9]+$ ]]; then
+    bytes=0
+  fi
+  if command -v numfmt >/dev/null 2>&1; then
+    numfmt --to=iec --suffix=B "$bytes"
+  else
+    printf '%sB' "$bytes"
+  fi
+}
+
 #--- check_disk_space
 check_disk_space() {
   [ "$DISK_CHECK" = "1" ] || return 0
-  local required_bytes
-  required_bytes="$(jq '[.packages | to_entries[] | select(.value.update_available == true) | .value.download_size_selected] | map(select(.!=null)) | add // 0' "$SYN_MANIFEST_PATH")"
-  if [ -z "$required_bytes" ] || ! [[ "$required_bytes" =~ ^[0-9]+$ ]]; then
-    log_warn "DISK" "Unable to determine download size; skipping disk check"
+  local manifest_metrics
+  manifest_metrics="$(python3 - "$SYN_MANIFEST_PATH" <<'PY' 2>/dev/null
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+except FileNotFoundError:
+    sys.exit(1)
+metadata = data.get("metadata") or {}
+
+def to_int(value):
+    if isinstance(value, (int, float)):
+        if value < 0:
+            return 0
+        return int(value)
+    return 0
+
+download = to_int(metadata.get("download_size_total"))
+build = to_int(metadata.get("build_size_total"))
+install = to_int(metadata.get("install_size_total"))
+transient = to_int(metadata.get("transient_size_total"))
+margin = to_int(metadata.get("min_free_bytes"))
+available = to_int(metadata.get("available_space_bytes"))
+path = metadata.get("space_checked_path") or ""
+
+if transient == 0:
+    transient = download + build + install
+
+print(f"{download}|{build}|{install}|{transient}|{margin}|{available}|{path}")
+PY
+)"
+  if [ -z "$manifest_metrics" ]; then
+    log_warn "DISK" "Manifest lacks space metadata; skipping disk check"
     return 0
   fi
-  if [ "$required_bytes" -eq 0 ]; then
+
+  local download_bytes build_bytes install_bytes transient_bytes manifest_margin available_bytes recorded_path
+  IFS='|' read -r download_bytes build_bytes install_bytes transient_bytes manifest_margin available_bytes recorded_path <<<"$manifest_metrics"
+
+  download_bytes="${download_bytes:-0}"
+  build_bytes="${build_bytes:-0}"
+  install_bytes="${install_bytes:-0}"
+  transient_bytes="${transient_bytes:-0}"
+  manifest_margin="${manifest_margin:-0}"
+  available_bytes="${available_bytes:-0}"
+  recorded_path="${recorded_path:-/}"
+
+  if ! [[ "$download_bytes" =~ ^[0-9]+$ && "$build_bytes" =~ ^[0-9]+$ && "$install_bytes" =~ ^[0-9]+$ ]]; then
+    log_warn "DISK" "Manifest space metrics invalid; skipping disk check"
     return 0
   fi
-  local margin_bytes=$((DISK_MARGIN_MB * 1024 * 1024))
-  if [ "$MIN_FREE_SPACE_MB" -gt 0 ]; then
-    margin_bytes=$((margin_bytes + (MIN_FREE_SPACE_MB * 1024 * 1024)))
+  if ! [[ "$transient_bytes" =~ ^[0-9]+$ ]]; then
+    transient_bytes=$((download_bytes + build_bytes + install_bytes))
   fi
-  local total_needed=$((required_bytes + margin_bytes))
-  local available_bytes
-  available_bytes="$(df -Pk / | awk 'NR==2 {print $4 * 1024}')"
+  if [ "$transient_bytes" -eq 0 ]; then
+    log_info "DISK" "No updates require disk resources."
+    return 0
+  fi
+
+  local margin_bytes="$MIN_FREE_SPACE_BYTES"
+  local extra_margin_bytes=$((DISK_MARGIN_MB * 1024 * 1024))
+  margin_bytes=$((margin_bytes + extra_margin_bytes))
+  if [[ "$manifest_margin" =~ ^[0-9]+$ ]] && [ "$manifest_margin" -gt "$margin_bytes" ]; then
+    margin_bytes="$manifest_margin"
+  fi
+  local required_bytes=$((transient_bytes + margin_bytes))
+
+  local available_path="$recorded_path"
+  if [ -z "$available_path" ]; then
+    available_path="/"
+  fi
+  if ! [[ "$available_bytes" =~ ^[0-9]+$ ]] || [ "$available_bytes" -eq 0 ]; then
+    available_bytes="$(df -Pk "$available_path" | awk 'NR==2 {print $4 * 1024}')"
+  fi
   if ! [[ "$available_bytes" =~ ^[0-9]+$ ]]; then
     log_warn "DISK" "Unable to read available disk space; skipping check"
     return 0
   fi
-  if [ "$available_bytes" -lt "$total_needed" ]; then
-    log_error "DISK" "Insufficient disk space: need $total_needed bytes (including margin), have $available_bytes"
+  SPACE_CHECK_PATH="$available_path"
+
+  if [ "$available_bytes" -lt "$required_bytes" ]; then
+    log_error "DISK" "Insufficient space: need $(format_bytes "$required_bytes") (download $(format_bytes "$download_bytes") + build $(format_bytes "$build_bytes") + install $(format_bytes "$install_bytes") + buffer $(format_bytes "$margin_bytes")), only $(format_bytes "$available_bytes") available on $available_path"
     log_finalize
     exit 421
   fi
-  log_info "DISK" "Disk space check passed (required=$total_needed available=$available_bytes)"
+
+  log_info "DISK" "Disk space check passed: need $(format_bytes "$required_bytes") (download $(format_bytes "$download_bytes") + build $(format_bytes "$build_bytes") + install $(format_bytes "$install_bytes") + buffer $(format_bytes "$margin_bytes")), have $(format_bytes "$available_bytes") on $available_path"
+}
+
+#--- ensure_package_disk_space
+ensure_package_disk_space() {
+  [ "$DISK_CHECK" = "1" ] || return 0
+  local pkg="$1"
+  local metrics
+  metrics="$(manifest_package_requirements "$pkg" || true)"
+  if [ -z "$metrics" ]; then
+    log_warn "DISK" "No manifest metrics available for $pkg; skipping disk verification"
+    return 0
+  fi
+  local download_bytes build_bytes install_bytes transient_bytes
+  IFS='|' read -r download_bytes build_bytes install_bytes transient_bytes <<<"$metrics"
+  download_bytes="${download_bytes:-0}"
+  build_bytes="${build_bytes:-0}"
+  install_bytes="${install_bytes:-0}"
+  transient_bytes="${transient_bytes:-0}"
+  if ! [[ "$download_bytes" =~ ^[0-9]+$ ]]; then
+    download_bytes=0
+  fi
+  if ! [[ "$build_bytes" =~ ^[0-9]+$ ]]; then
+    build_bytes=0
+  fi
+  if ! [[ "$install_bytes" =~ ^[0-9]+$ ]]; then
+    install_bytes=0
+  fi
+  if ! [[ "$transient_bytes" =~ ^[0-9]+$ ]]; then
+    transient_bytes=0
+  fi
+  if [ "$download_bytes" -eq 0 ] && [ "$build_bytes" -eq 0 ] && [ "$install_bytes" -eq 0 ]; then
+    log_warn "DISK" "Package $pkg lacks size telemetry; continuing without disk guard"
+    return 0
+  fi
+  local margin_bytes="$MIN_FREE_SPACE_BYTES"
+  local extra_margin_bytes=$((DISK_MARGIN_MB * 1024 * 1024))
+  margin_bytes=$((margin_bytes + extra_margin_bytes))
+  local required_bytes
+  if [ "$transient_bytes" -gt 0 ]; then
+    required_bytes="$transient_bytes"
+  else
+    required_bytes=$((download_bytes + build_bytes + install_bytes))
+  fi
+  local total_needed=$((required_bytes + margin_bytes))
+  local available_bytes
+  available_bytes="$(df -Pk "$SPACE_CHECK_PATH" | awk 'NR==2 {print $4 * 1024}')"
+  if ! [[ "$available_bytes" =~ ^[0-9]+$ ]]; then
+    log_warn "DISK" "Unable to assess disk space prior to installing $pkg"
+    return 0
+  fi
+  if [ "$available_bytes" -lt "$total_needed" ]; then
+    log_error "DISK" "Skipping $pkg: requires $(format_bytes "$total_needed") (download $(format_bytes "$download_bytes"), build $(format_bytes "$build_bytes"), install $(format_bytes "$install_bytes"), buffer $(format_bytes "$margin_bytes")) but only $(format_bytes "$available_bytes") available on $SPACE_CHECK_PATH"
+    return 1
+  fi
+  log_debug "DISK" "Sufficient space for $pkg (need $(format_bytes "$total_needed"), available $(format_bytes "$available_bytes") on $SPACE_CHECK_PATH)"
+  return 0
 }
 
 #--- check_pacnew
@@ -562,6 +798,9 @@ cmd_core() {
     if [ "$LOG_VERBOSE" = "1" ]; then
       args+=("--verbose")
     fi
+    if [ "${MIN_FREE_SPACE_BYTES:-0}" -gt 0 ]; then
+      args+=("--min-free-gb" "$(bytes_to_gb_string "$MIN_FREE_SPACE_BYTES")")
+    fi
     "$SYN_CORE_BIN" "${args[@]}" || exit $?
   else
     manifest_rebuild
@@ -601,6 +840,10 @@ cmd_sync() {
     fi
     case "$source" in
       PACMAN|Pacman|PACMAN)
+        if ! ensure_package_disk_space "$pkg"; then
+          failed=$((failed + 1))
+          continue
+        fi
         repo_batch+=("$pkg")
         if [ "${#repo_batch[@]}" -ge "$BATCH_SIZE" ]; then
           if ! run_repo_batch "${repo_batch[@]}"; then
@@ -654,6 +897,9 @@ execute_update() {
         log_info "SKIP" "Repo updates disabled; skipping $pkg"
         return 0
       fi
+      if ! ensure_package_disk_space "$pkg"; then
+        return 1
+      fi
       # Security: requires sudo to install repo package updates.
       local -a args=(-S)
       [ "$NO_CONFIRM" = "1" ] && args+=(--noconfirm)
@@ -666,6 +912,9 @@ execute_update() {
       fi
       if [ -z "$helper" ]; then
         log_error "E401" "No helper available for $pkg"
+        return 1
+      fi
+      if ! ensure_package_disk_space "$pkg"; then
         return 1
       fi
       # Security: helper executes as invoking user; it will escalate internally if needed.
@@ -991,6 +1240,7 @@ Flags:
   --helper <name>   Force a specific AUR helper
   --include <regex> Include only packages matching regex (repeatable)
   --exclude <regex> Exclude packages matching regex (repeatable)
+  --min-free-gb <N> Override required free space buffer in gigabytes
   --batch <N>       Batch size for repo installs (default from config or 10)
 EOF
 }

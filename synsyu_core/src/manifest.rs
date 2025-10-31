@@ -55,6 +55,13 @@ pub struct ManifestMetadata {
     pub aur_candidates: usize,
     pub updates_available: usize,
     pub download_size_total: u64,
+    pub build_size_total: u64,
+    pub install_size_total: u64,
+    pub transient_size_total: u64,
+    pub min_free_bytes: u64,
+    pub required_space_total: u64,
+    pub available_space_bytes: u64,
+    pub space_checked_path: String,
 }
 
 /// Per-package manifest entry.
@@ -73,6 +80,9 @@ pub struct ManifestEntry {
     pub installed_size_aur: Option<u64>,
     pub download_size_selected: Option<u64>,
     pub installed_size_selected: Option<u64>,
+    pub install_size_estimate: Option<u64>,
+    pub build_size_estimate: Option<u64>,
+    pub transient_size_estimate: Option<u64>,
 }
 
 /// Source classification for an update candidate.
@@ -90,6 +100,7 @@ pub async fn build_manifest(
     packages: &[InstalledPackage],
     repo_versions: &HashMap<String, VersionInfo>,
     aur_versions: &HashMap<String, VersionInfo>,
+    min_free_bytes: u64,
     logger: &Logger,
 ) -> Result<ManifestDocument> {
     let mut entries = BTreeMap::new();
@@ -97,6 +108,9 @@ pub async fn build_manifest(
     let mut aur_candidates = 0usize;
     let mut updates_available = 0usize;
     let mut download_total = 0u64;
+    let mut build_total = 0u64;
+    let mut install_total = 0u64;
+    let mut transient_total = 0u64;
 
     for package in packages {
         let repo_info = repo_versions.get(&package.name);
@@ -114,6 +128,15 @@ pub async fn build_manifest(
             updates_available += 1;
             if let Some(size) = resolved.download_size_selected {
                 download_total = download_total.saturating_add(size);
+            }
+            if let Some(size) = resolved.build_size_estimate {
+                build_total = build_total.saturating_add(size);
+            }
+            if let Some(size) = resolved.install_size_estimate {
+                install_total = install_total.saturating_add(size);
+            }
+            if let Some(size) = resolved.transient_size_estimate {
+                transient_total = transient_total.saturating_add(size);
             }
         }
         logger.debug(
@@ -135,6 +158,13 @@ pub async fn build_manifest(
         aur_candidates,
         updates_available,
         download_size_total: download_total,
+        build_size_total: build_total,
+        install_size_total: install_total,
+        transient_size_total: transient_total,
+        min_free_bytes,
+        required_space_total: transient_total.saturating_add(min_free_bytes),
+        available_space_bytes: 0,
+        space_checked_path: String::new(),
     };
 
     Ok(ManifestDocument {
@@ -219,7 +249,39 @@ async fn resolve_package(
     let (download_selected, installed_selected) = match source {
         PackageSource::Pacman => (download_repo, installed_repo),
         PackageSource::Aur => (download_aur, installed_aur),
-        _ => (None, None),
+        PackageSource::Local => (None, None),
+        PackageSource::Unknown => (
+            download_repo.or(download_aur),
+            installed_repo.or(installed_aur),
+        ),
+    };
+
+    let install_estimate = match (installed_selected, download_selected, source) {
+        (Some(value), _, _) => Some(value),
+        (None, Some(download), PackageSource::Aur) => Some(download.saturating_mul(2)),
+        (None, Some(download), _) => Some(download),
+        _ => None,
+    };
+
+    let build_estimate = match (source, install_estimate, download_selected) {
+        (PackageSource::Pacman, Some(install), _) => {
+            let triple = install.saturating_mul(3);
+            Some(triple / 2 + triple % 2)
+        }
+        (PackageSource::Aur, _, Some(download)) => Some(download.saturating_mul(8)),
+        _ => None,
+    };
+
+    let transient_estimate = {
+        let download = download_selected.unwrap_or(0);
+        let build = build_estimate.unwrap_or(0);
+        let install = install_estimate.unwrap_or(0);
+        let total = download.saturating_add(build).saturating_add(install);
+        if total == 0 {
+            None
+        } else {
+            Some(total)
+        }
     };
 
     Ok(ManifestEntry {
@@ -236,6 +298,9 @@ async fn resolve_package(
         installed_size_aur: installed_aur,
         download_size_selected: download_selected,
         installed_size_selected: installed_selected,
+        install_size_estimate: install_estimate,
+        build_size_estimate: build_estimate,
+        transient_size_estimate: transient_estimate,
     })
 }
 

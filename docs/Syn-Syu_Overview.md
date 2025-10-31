@@ -126,10 +126,14 @@ disk_extra_margin_mb = 200
 keep_versions = 2
 remove_orphans = false
 check_pacnew = true
+
+[space]
+min_free_gb = 100
 ```
 
-`[core]` also accepts `min_free_space_mb` to enforce an absolute free-space
-floor when disk checks are enabled.
+The `[space]` section defines `min_free_gb`, a buffer that must remain free on
+disk before updates proceed. The orchestrator also honours `disk_extra_margin_mb`
+for additional breathing room.
 
 ## Logging
 
