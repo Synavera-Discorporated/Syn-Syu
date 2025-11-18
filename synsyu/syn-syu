@@ -719,7 +719,7 @@ check_pacnew() {
   if [ -n "$output" ]; then
     log_warn "PACNEW" "Configuration files awaiting review:\n$output"
     if [ "$QUIET" != "1" ]; then
-      printf '-> Configuration updates detected (pacnew/pacsave files):\n'
+      printf '%s\n' '-> Configuration updates detected (pacnew/pacsave files):'
       printf '%s\n' "$output"
     fi
   else
