@@ -13,6 +13,8 @@ produce detailed logs for review.
 - Configurable logging level with time and size-based log retention policies.
 - Validates download, build, and install footprint before updates, applying a
   configurable free-space buffer.
+- Optional application updates for Flatpak and firmware (fwupd) with dedicated
+  commands or opt-in flags during sync.
 - Supports guided or advanced install workflows through optional tooling.
 - Logs every action with timestamped entries to simplify auditing.
 - Provides commands for sync, targeted updates, group operations, cleaning, and
@@ -65,6 +67,10 @@ file is provided at `examples/config.toml`. Key options include:
 - `logging.directory` – explicit log location (falls back to `core.log_directory`
   for compatibility).
 - `helpers.priority` – ordered list of AUR helpers to try.
+- `aur.max_parallel_requests` / `aur.max_kib_per_sec` – control how many AUR
+  RPC calls run concurrently and optionally throttle each request in KiB/s.
+- `applications.flatpak` / `applications.fwupd` – opt-in application/firmware
+  updates during `sync` (also exposed as commands and `--with-*` flags).
 - `snapshots.*` – optional pre/post commands for snapshot integrations.
 - `safety.disk_check` / `safety.disk_extra_margin_mb` – enable disk guards and
   define additional safety margin before installs proceed.
@@ -82,6 +88,9 @@ synsyu --dry-run  # Preview updates without making changes
 synsyu update <pkg>...
 synsyu group <name>
 synsyu clean
+synsyu flatpak    # Apply Flatpak updates (or dry-run list)
+synsyu fwupd      # Apply firmware updates via fwupdmgr
+synsyu sync --with-flatpak --with-fwupd  # include app/firmware updates in one sweep
 ```
 
 Use `syn-syu --help` for the full command set, including manifest inspection,

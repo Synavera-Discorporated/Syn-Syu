@@ -114,6 +114,8 @@ SPACE_CHECK_PATH="/"
 CLEAN_KEEP_VERSIONS=2
 CLEAN_REMOVE_ORPHANS=0
 CLEAN_CHECK_PACNEW=1
+APPLICATIONS_FLATPAK=0
+APPLICATIONS_FWUPD=0
 COMMAND=""
 COMMAND_ARGS=()
 HELPER_PRIORITY=()
@@ -265,6 +267,22 @@ parse_cli() {
         MIN_FREE_SPACE_OVERRIDE_BYTES="$converted"
         shift 2
         ;;
+      --with-flatpak)
+        APPLICATIONS_FLATPAK=1
+        shift
+        ;;
+      --no-flatpak)
+        APPLICATIONS_FLATPAK=0
+        shift
+        ;;
+      --with-fwupd)
+        APPLICATIONS_FWUPD=1
+        shift
+        ;;
+      --no-fwupd)
+        APPLICATIONS_FWUPD=0
+        shift
+        ;;
       --help|-h)
         COMMAND="help"
         shift
@@ -333,6 +351,7 @@ safety = data.get("safety", {})
 clean = data.get("clean", {})
 logging = data.get("logging", {})
 space = data.get("space", {})
+applications = data.get("applications", {})
 
 log_directory = logging.get("directory") or core.get("log_directory", "")
 
@@ -362,7 +381,9 @@ settings = {
     "safety_disk_margin_mb": safety.get("disk_extra_margin_mb", 200),
     "clean_keep_versions": clean.get("keep_versions", 2),
     "clean_remove_orphans": clean.get("remove_orphans", False),
-    "clean_check_pacnew": clean.get("check_pacnew", True)
+    "clean_check_pacnew": clean.get("check_pacnew", True),
+    "apps_flatpak_enabled": applications.get("flatpak", False),
+    "apps_fwupd_enabled": applications.get("fwupd", False)
 }
 
 print(json.dumps(settings))
@@ -372,6 +393,7 @@ PY
   fi
 
   local manifest_path helper_line log_dir batch_size log_level retention_days retention_mb
+  local apps_flatpak apps_fwupd
   if [ -n "$py_output" ]; then
     manifest_path="$(printf '%s' "$py_output" | jq -r '.manifest // ""')"
     helper_line="$(printf '%s' "$py_output" | jq -r '.helper_priority | join(" ")')"
@@ -380,6 +402,8 @@ PY
     retention_days="$(printf '%s' "$py_output" | jq -r '.log_retention_days // empty')"
     retention_mb="$(printf '%s' "$py_output" | jq -r '.log_retention_megabytes // empty')"
     batch_size="$(printf '%s' "$py_output" | jq -r '.batch_size // 10')"
+    apps_flatpak="$(printf '%s' "$py_output" | jq -r '.apps_flatpak_enabled // false')"
+    apps_fwupd="$(printf '%s' "$py_output" | jq -r '.apps_fwupd_enabled // false')"
     local min_free_bytes_config
     min_free_bytes_config="$(printf '%s' "$py_output" | jq -r '.space_min_free_bytes // empty')"
     local snapshots_enabled
@@ -470,6 +494,13 @@ PY
     fi
     if [ "$clean_pacnew" = "false" ]; then
       CLEAN_CHECK_PACNEW=0
+    fi
+
+    if [ "$apps_flatpak" = "true" ]; then
+      APPLICATIONS_FLATPAK=1
+    fi
+    if [ "$apps_fwupd" = "true" ]; then
+      APPLICATIONS_FWUPD=1
     fi
   fi
 
@@ -704,6 +735,79 @@ ensure_package_disk_space() {
   return 0
 }
 
+#--- run_flatpak_updates
+run_flatpak_updates() {
+  if ! command -v flatpak >/dev/null 2>&1; then
+    log_warn "FLATPAK" "flatpak not installed; skipping Flatpak updates"
+    return 0
+  fi
+
+  if [ "$DRY_RUN" = "1" ]; then
+    local updates
+    updates="$(flatpak_dry_run_list)"
+    if [ -z "$updates" ]; then
+      log_info "FLATPAK" "No Flatpak updates available (dry-run)"
+    else
+      log_info "FLATPAK" "Pending Flatpak updates (dry-run):"
+      printf '%s\n' "$updates"
+    fi
+    return 0
+  fi
+
+  log_info "FLATPAK" "Applying Flatpak updates"
+  local -a fp_args=(update)
+  # Prefer non-interactive, yes-to-all when available.
+  if flatpak --help 2>/dev/null | grep -q -- "--noninteractive"; then
+    fp_args+=(--noninteractive)
+  fi
+  fp_args+=(--assumeyes)
+  if ! flatpak "${fp_args[@]}"; then
+    # Fallback without noninteractive for older Flatpak versions.
+    if ! flatpak update --assumeyes; then
+      log_error "FLATPAK" "Flatpak update failed"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+flatpak_dry_run_list() {
+  local updates_output
+  updates_output="$(flatpak remote-ls --updates --columns=application,branch,origin 2>/dev/null || true)"
+  printf '%s' "$updates_output"
+}
+
+#--- run_fwupd_updates
+run_fwupd_updates() {
+  if ! command -v fwupdmgr >/dev/null 2>&1; then
+    log_warn "FWUPD" "fwupdmgr not installed; skipping firmware updates"
+    return 0
+  fi
+
+  if [ "$DRY_RUN" = "1" ]; then
+    local output
+    output="$(fwupdmgr get-updates 2>/dev/null || true)"
+    if [ -z "$output" ]; then
+      log_info "FWUPD" "No firmware updates available (dry-run)"
+    else
+      log_info "FWUPD" "Pending firmware updates (dry-run):"
+      printf '%s\n' "$output"
+    fi
+    return 0
+  fi
+
+  log_info "FWUPD" "Applying firmware updates via fwupdmgr"
+  local -a args=(update)
+  if fwupdmgr --help 2>/dev/null | grep -q -- "--assume-yes"; then
+    args+=(--assume-yes)
+  fi
+  if ! fwupdmgr "${args[@]}"; then
+    log_error "FWUPD" "Firmware update failed"
+    return 1
+  fi
+  return 0
+}
+
 #--- check_pacnew
 check_pacnew() {
   [ "$CLEAN_CHECK_PACNEW" = "1" ] || return 0
@@ -764,6 +868,15 @@ dispatch_command() {
       ;;
     export)
       cmd_export "${COMMAND_ARGS[@]}"
+      ;;
+    flatpak)
+      cmd_flatpak
+      ;;
+    fwupd)
+      cmd_fwupd
+      ;;
+    apps)
+      cmd_apps
       ;;
     help)
       cmd_help
@@ -884,6 +997,17 @@ cmd_sync() {
     fi
   fi
 
+  if [ "$APPLICATIONS_FLATPAK" = "1" ]; then
+    if ! run_flatpak_updates; then
+      failed=$((failed + 1))
+    fi
+  fi
+  if [ "$APPLICATIONS_FWUPD" = "1" ]; then
+    if ! run_fwupd_updates; then
+      failed=$((failed + 1))
+    fi
+  fi
+
   log_info "SUMMARY" "Updates processed=$processed failed=$failed"
   [ "$QUIET" = "1" ] || printf -- '-> System integrity sweep complete.\n'
   [ "$QUIET" = "1" ] || printf -- '-> Processed: %s (failed %s)\n' "$processed" "$failed"
@@ -895,6 +1019,34 @@ cmd_sync() {
     check_pacnew
     run_snapshot "post"
   fi
+}
+
+#--- cmd_flatpak
+cmd_flatpak() {
+  log_info "FLATPAK" "Flatpak update command triggered"
+  if ! run_flatpak_updates; then
+    exit 601
+  fi
+}
+
+#--- cmd_fwupd
+cmd_fwupd() {
+  log_info "FWUPD" "Firmware update command triggered"
+  if ! run_fwupd_updates; then
+    exit 602
+  fi
+}
+
+#--- cmd_apps
+cmd_apps() {
+  local status=0
+  if ! run_flatpak_updates; then
+    status=1
+  fi
+  if ! run_fwupd_updates; then
+    status=1
+  fi
+  return $status
 }
 
 #--- execute_update
@@ -1223,6 +1375,9 @@ Commands:
   core              Rebuild manifest via synsyu_core
   aur               Update only AUR packages
   repo              Update only repo packages
+  flatpak           Apply Flatpak application updates
+  fwupd             Apply firmware updates via fwupdmgr
+  apps              Apply both Flatpak and firmware updates
   update <pkgs...>  Update specific packages
   group <name>      Update package group defined in groups.toml
   inspect <pkg>     Show manifest detail for package
@@ -1251,6 +1406,10 @@ Flags:
   --exclude <regex> Exclude packages matching regex (repeatable)
   --min-free-gb <N> Override required free space buffer in gigabytes
   --batch <N>       Batch size for repo installs (default from config or 10)
+  --with-flatpak    Include Flatpak updates during sync
+  --no-flatpak      Skip Flatpak updates (overrides config)
+  --with-fwupd      Include firmware updates during sync
+  --no-fwupd        Skip firmware updates (overrides config)
 EOF
 }
 

@@ -3,6 +3,9 @@ base_url = "https://aur.archlinux.org/rpc/"
 max_args = 50
 max_retries = 3
 timeout = 10
+max_parallel_requests = 4
+# Limit per-request download speed in KiB/s (0 disables throttling)
+max_kib_per_sec = 0
 
 [core]
 manifest_path = "/tmp/syn-syu_manifest.json"
@@ -35,3 +38,7 @@ disk_extra_margin_mb = 0
 keep_versions = 2
 remove_orphans = false
 check_pacnew = true
+
+[applications]
+flatpak = false
+fwupd = false

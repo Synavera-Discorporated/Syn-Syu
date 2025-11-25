@@ -57,6 +57,8 @@ route packages through `pacman` or the preferred AUR helper.
 | `syn-syu sync` | Update all packages with available upgrades. |
 | `syn-syu aur` | Apply only AUR updates (repo upgrades skipped). |
 | `syn-syu repo` | Apply only repo updates. |
+| `syn-syu flatpak` | Apply Flatpak updates (or list when `--dry-run`). |
+| `syn-syu fwupd` | Apply firmware updates via fwupdmgr (or list when `--dry-run`). |
 | `syn-syu update brave-bin` | Update selected packages. |
 | `syn-syu group development` | Update packages in a named group from `groups.toml`. |
 | `syn-syu inspect brave-bin` | Show manifest detail for a package. |
@@ -77,6 +79,8 @@ Use `syn-syu --help` for the full flag list.
   `sync` (both flags repeatable; evaluated as Bash regex).
 - `--batch <N>` – repo package batch size; defaults to `core.batch_size` from
   config or `10`.
+- `--with-flatpak` / `--with-fwupd` – opt into Flatpak and firmware updates
+  during `sync` (also available as standalone commands).
 
 ### Safety & Maintenance Additions
 
@@ -90,6 +94,9 @@ Use `syn-syu --help` for the full flag list.
 - **pacnew detection** – after successful updates, Syn-Syu scans for
   `.pacnew/.pacsave` files (using `pacdiff` when available) and surfaces them in
   logs/console so you can merge configuration changes promptly.
+- **Application updates** – opt into Flatpak and firmware (fwupd) updates via
+  config (`[applications]`) or on-demand commands `syn-syu flatpak` /
+  `syn-syu fwupd`, or include them in `sync` with `--with-flatpak`/`--with-fwupd`.
 - **Enhanced clean** – `syn-syu clean` now leverages `paccache` to retain the
   most recent `keep_versions` package versions, optionally removes orphaned
   dependencies, and trims stale installer logs.
@@ -112,6 +119,15 @@ media = ["mpv", "vlc"]
 Key config sections beyond the basics:
 
 ```toml
+[aur]
+# Limit concurrent AUR RPC calls and optionally throttle each request (KiB/s)
+max_parallel_requests = 4
+max_kib_per_sec = 0
+
+[applications]
+flatpak = false
+fwupd = false
+
 [snapshots]
 enabled = false
 pre_command = "sudo snapper create --description 'Syn-Syu pre-update'"
