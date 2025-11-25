@@ -3,7 +3,7 @@ name = "synsyu_core"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/CmdDraven/Syn-Syu"
+repository = "https://github.com/Synavera-Discorporated/Syn-Syu"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

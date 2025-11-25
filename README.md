@@ -28,7 +28,7 @@ CLI behaviour.
 The repository ships with a ready-to-build PKGBUILD.
 
 ```bash
-git clone git@github.com:CmdDraven/Syn-Syu.git
+git clone git@github.com:Synavera-Discorporated/Syn-Syu.git
 cd Syn-Syu
 makepkg -sif
 ```

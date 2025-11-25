@@ -3,13 +3,13 @@ pkgver=0.1
 pkgrel=1
 pkgdesc="Syn-Syu — Synavera's conscious successor to pacman -Syu"
 arch=('x86_64')
-url="https://github.com/CmdDraven/Syn-Syu"
+url="https://github.com/Synavera-Discorporated/Syn-Syu"
 license=('Apache')
 depends=('bash' 'jq' 'python' 'pacman' 'sudo')
 makedepends=('rust' 'cargo' 'git')
 provides=('syn-syu' 'synsyu')
 conflicts=('syn-syu-git' 'synsyu-git')
-source=("syn-syu::git+https://github.com/CmdDraven/Syn-Syu.git")
+source=("syn-syu::git+https://github.com/Synavera-Discorporated/Syn-Syu.git")
 sha256sums=('SKIP')
 
 build() {
