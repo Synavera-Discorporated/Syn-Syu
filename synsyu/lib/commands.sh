@@ -484,6 +484,30 @@ cmd_check() {
   else
     printf -- '-> Manifest summary\n'
     manifest_summary || log_warn "MANIFEST" "Unable to summarize manifest"
+
+    printf '\n-> Package update details\n'
+    local package_updates
+    package_updates="$(manifest_update_details || true)"
+    if [ -n "$package_updates" ]; then
+      while IFS=$'\t' read -r name source installed newer; do
+        [ -z "$name" ] && continue
+        printf ' - %s [%s]: %s -> %s\n' "$name" "$source" "${installed:-?}" "${newer:-?}"
+      done <<<"$package_updates"
+    else
+      printf ' - None\n'
+    fi
+
+    printf '\n-> Application updates\n'
+    local app_updates
+    app_updates="$(manifest_application_update_details || true)"
+    if [ -n "$app_updates" ]; then
+      while IFS=$'\t' read -r kind detail; do
+        [ -z "$kind" ] && continue
+        printf ' - %s: %s\n' "$kind" "$detail"
+      done <<<"$app_updates"
+    else
+      printf ' - None\n'
+    fi
   fi
 }
 

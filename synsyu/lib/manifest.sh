@@ -287,6 +287,45 @@ manifest_packages_stream() {
   jq -r '.packages | to_entries[] | "\(.key)|\(.value.source)|\(.value.newer_version)|\(.value.update_available)"' "$SYN_MANIFEST_PATH"
 }
 
+#--- manifest_update_details
+manifest_update_details() {
+  if [ ! -f "$SYN_MANIFEST_PATH" ]; then
+    return 1
+  fi
+  jq -r '
+    .packages
+    | to_entries
+    | map(select(.value.update_available==true)
+      | "\(.key)\t\(.value.source // \"unknown\")\t\(.value.installed_version // \"?\")\t\(.value.newer_version // \"?\")")
+    | .[]
+  ' "$SYN_MANIFEST_PATH"
+}
+
+#--- manifest_application_update_details
+manifest_application_update_details() {
+  if [ ! -f "$SYN_MANIFEST_PATH" ]; then
+    return 1
+  fi
+  jq -r '
+    [
+      (if .applications.flatpak.enabled==true then
+         (.applications.flatpak.updates // [])
+         | map("flatpak\t" + ((.application // .raw // "?")
+           + (if (.branch // "") != "" then " [" + .branch + "]" else "" end)
+           + (if (.origin // "") != "" then " {" + .origin + "}" else "" end)))
+       else [] end),
+      (if .applications.fwupd.enabled==true then
+         (.applications.fwupd.updates // [])
+         | map("fwupd\t" + ((.device // .raw // "?")
+           + (if (.version // "") != "" then " -> " + .version else "" end)
+           + (if (.title // "") != "" then " (" + .title + ")" else "" end)))
+       else [] end)
+    ]
+    | flatten
+    | .[]
+  ' "$SYN_MANIFEST_PATH"
+}
+
 #--- manifest_package_requirements
 manifest_package_requirements() {
   local package="$1"
