@@ -296,7 +296,12 @@ manifest_update_details() {
     .packages
     | to_entries
     | map(select(.value.update_available==true)
-      | "\(.key)\t\(.value.source // \"unknown\")\t\(.value.installed_version // \"?\")\t\(.value.newer_version // \"?\")")
+      | [
+          .key,
+          (.value.source // "unknown"),
+          (.value.installed_version // "?"),
+          (.value.newer_version // "?")
+        ] | @tsv)
     | .[]
   ' "$SYN_MANIFEST_PATH"
 }
