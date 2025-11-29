@@ -25,6 +25,7 @@ mod space;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
@@ -202,7 +203,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<ExitCode> {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(normalize_args(env::args_os()));
 
     if cli.internal_manifest_build {
         let core_args = match cli.command.clone() {
@@ -630,6 +631,8 @@ fn resolve_driver_script() -> Result<PathBuf> {
             "/usr/local/share/syn-syu/lib/driver.sh",
             "/usr/share/syn-syu/lib/driver.sh",
             "/usr/lib/syn-syu/lib/driver.sh",
+            "/usr/lib/syn-syu/driver.sh",
+            "/usr/share/syn-syu/driver.sh",
             "/usr/local/share/synsyu/lib/driver.sh",
             "/usr/lib/synsyu/lib/driver.sh",
         ]
@@ -646,4 +649,92 @@ fn resolve_driver_script() -> Result<PathBuf> {
     Err(SynsyuError::Runtime(
         "Unable to locate syn-syu driver (driver.sh)".into(),
     ))
+}
+
+fn normalize_args(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut args: Vec<OsString> = args.into_iter().collect();
+    if args.len() <= 2 {
+        return args;
+    }
+
+    let bin = args.remove(0);
+    let first = args.get(0).cloned();
+    let subcommands: HashSet<&str> = HashSet::from([
+        "sync", "core", "aur", "repo", "update", "group", "inspect", "check", "clean", "log",
+        "export", "flatpak", "fwupd", "apps", "version", "help",
+    ]);
+
+    let Some(command_os) = first else {
+        let mut restored = Vec::new();
+        restored.push(bin);
+        restored.extend(args);
+        return restored;
+    };
+    let command_string = command_os.to_string_lossy();
+    if !subcommands.contains(command_string.as_ref()) {
+        let mut restored = Vec::new();
+        restored.push(bin);
+        restored.push(command_os);
+        restored.extend(args.into_iter().skip(1));
+        return restored;
+    }
+
+    let mut trailing_globals: Vec<OsString> = Vec::new();
+    let mut remainder: Vec<OsString> = Vec::new();
+    let mut iter = args.into_iter().skip(1).peekable();
+    while let Some(arg) = iter.next() {
+        match classify_global(&arg) {
+            GlobalKind::Flag => trailing_globals.push(arg),
+            GlobalKind::Value => {
+                trailing_globals.push(arg.clone());
+                if let Some(next) = iter.next() {
+                    trailing_globals.push(next);
+                }
+            }
+            GlobalKind::InlineValue => trailing_globals.push(arg),
+            GlobalKind::NotGlobal => remainder.push(arg),
+        }
+    }
+
+    let mut normalized = Vec::new();
+    normalized.push(bin);
+    normalized.extend(trailing_globals);
+    normalized.push(command_os);
+    normalized.extend(remainder);
+    normalized
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalKind {
+    Flag,
+    Value,
+    InlineValue,
+    NotGlobal,
+}
+
+fn classify_global(arg: &OsString) -> GlobalKind {
+    let Some(raw) = arg.to_str() else {
+        return GlobalKind::NotGlobal;
+    };
+    if raw.starts_with("--config=")
+        || raw.starts_with("--manifest=")
+        || raw.starts_with("--log=")
+        || raw.starts_with("--helper=")
+        || raw.starts_with("--include=")
+        || raw.starts_with("--exclude=")
+        || raw.starts_with("--min-free-gb=")
+        || raw.starts_with("--batch=")
+        || raw.starts_with("--groups=")
+    {
+        return GlobalKind::InlineValue;
+    }
+
+    match raw {
+        "--config" | "--manifest" | "--log" | "--helper" | "--include" | "--exclude"
+        | "--min-free-gb" | "--batch" | "--groups" => GlobalKind::Value,
+        "--rebuild" | "--dry-run" | "--no-aur" | "--no-repo" | "--verbose" | "--quiet" | "-q"
+        | "--json" | "--confirm" | "--no-flatpak" | "--with-flatpak" | "--with-fwupd"
+        | "--no-fwupd" | "--version" | "-V" | "--help" | "-h" => GlobalKind::Flag,
+        _ => GlobalKind::NotGlobal,
+    }
 }

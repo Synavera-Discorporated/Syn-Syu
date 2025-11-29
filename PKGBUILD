@@ -25,6 +25,7 @@ package() {
   install -Dm755 synsyu/syn-syu "$pkgdir/usr/bin/syn-syu"
 
   # Shell library modules (Syn-Syu searches /usr/lib/syn-syu)
+  install -Dm755 synsyu/lib/driver.sh  "$pkgdir/usr/lib/syn-syu/driver.sh"
   install -Dm644 synsyu/lib/logging.sh  "$pkgdir/usr/lib/syn-syu/logging.sh"
   install -Dm644 synsyu/lib/helpers.sh  "$pkgdir/usr/lib/syn-syu/helpers.sh"
   install -Dm644 synsyu/lib/manifest.sh "$pkgdir/usr/lib/syn-syu/manifest.sh"

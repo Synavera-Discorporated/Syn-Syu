@@ -1,9 +1,10 @@
 # Syn-Syu
 
-Syn-Syu is Synavera's conscious successor to `pacman -Syu`. A Bash orchestrator
-(`syn-syu`) works together with a Rust backend (`synsyu_core`) to build a
-manifest of safe package upgrades, apply repo and AUR updates selectively, and
-produce detailed logs for review.
+Syn-Syu is Synavera's conscious successor to `pacman -Syu`. A single Rust CLI
+(`synsyu_core`, exposed as the `syn-syu` entrypoint) drives the workflow: it
+parses the entire command surface, builds manifests, then hands orchestration
+off to the packaged Bash driver for installs. One binary owns all behaviour; the
+shell wrapper is only a compatibility shim.
 
 ## Features
 
@@ -37,9 +38,10 @@ makepkg -sif
 
 This installs:
 
-- `/usr/bin/syn-syu` (Bash orchestrator)
-- `/usr/bin/synsyu_core` (Rust backend)
-- `/usr/lib/syn-syu/*.sh` (helper libraries)
+- `/usr/bin/syn-syu` (wrapper that execs `synsyu_core`)
+- `/usr/bin/synsyu_core` (Rust CLI + manifest builder)
+- `/usr/lib/syn-syu/driver.sh` (Bash driver invoked by the CLI)
+- `/usr/lib/syn-syu/*.sh` (helper libraries used by the driver)
 - `/usr/share/doc/syn-syu/` (documentation and examples)
 
 ### Manual install
@@ -81,25 +83,26 @@ CLI flags such as `--config`, `--include`, `--exclude`, `--dry-run`,
 
 ## Usage
 
-Common entry points (both `syn-syu` and `synsyu` work):
+The CLI accepts all commands via `syn-syu` (or `synsyu` symlink). Global flags
+can be placed before or after the subcommand.
 
 ```bash
-synsyu            # Sync repo metadata, rebuild manifest, prompt for updates
-synsyu --dry-run  # Preview updates without making changes
-synsyu update <pkg>...
-synsyu group <name>
-synsyu clean
-synsyu core --with-flatpak --with-fwupd  # record Flatpak/firmware intent in manifest
-synsyu flatpak    # Apply Flatpak updates (or dry-run list)
-synsyu fwupd      # Apply firmware updates via fwupdmgr
-synsyu sync --with-flatpak --with-fwupd  # include app/firmware updates in one sweep
+syn-syu sync --dry-run                    # Preview updates without applying
+syn-syu update <pkg>...                   # Update specific packages
+syn-syu group <name>                      # Update packages defined in groups.toml
+syn-syu aur --include 'vscodium'          # AUR-only with include filter
+syn-syu repo --batch 5                    # Repo-only with custom batch size
+syn-syu check --json                      # Summarize manifest in JSON
+syn-syu inspect <pkg>                     # Show manifest detail for a package
+syn-syu core --with-flatpak --with-fwupd  # Rebuild manifest, recording app intent
+syn-syu flatpak                           # Apply Flatpak updates
+syn-syu fwupd                             # Apply firmware updates
+syn-syu clean                             # Prune caches/orphans
 ```
 
-CLI parsing now lives entirely in the Rust binary (`synsyu_core`); the `syn-syu`
-shell entry point simply forwards arguments to it for a single source of truth.
-
-Use `syn-syu --help` for the full command set, including manifest inspection,
-logging, and AUR-only or repo-only operations.
+Use `syn-syu --help` for the full command set and `syn-syu <command> --help` for
+command-specific flags. The driver binary is auto-discovered from packaged
+paths; set `SYN_SYU_DRIVER` to override if needed.
 
 ## Development
 
