@@ -183,6 +183,16 @@ apply_cli_overrides() {
   fi
 }
 
+#--- apply_application_flags
+# Align application toggles with CLI overrides or manifest state.
+apply_application_flags() {
+  # If CLI explicitly set the flags, keep them; otherwise hydrate from manifest.
+  if [ -n "${APPLICATIONS_FLATPAK_CLI:-}" ] || [ -n "${APPLICATIONS_FWUPD_CLI:-}" ]; then
+    return 0
+  fi
+  manifest_apply_application_flags
+}
+
 #--- main
 main() {
   hydrate_arrays_from_env
