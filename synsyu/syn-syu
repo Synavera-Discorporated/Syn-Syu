@@ -83,15 +83,19 @@ fi
 # shellcheck source=/dev/null
 . "$LIB_DIR/config.sh"
 # shellcheck source=/dev/null
+. "$LIB_DIR/common.sh"
+# shellcheck source=/dev/null
 . "$LIB_DIR/cli.sh"
 # shellcheck source=/dev/null
 . "$LIB_DIR/disk.sh"
 # shellcheck source=/dev/null
 . "$LIB_DIR/apps.sh"
 # shellcheck source=/dev/null
+. "$LIB_DIR/plan.sh"
+# shellcheck source=/dev/null
 . "$LIB_DIR/commands.sh"
 
-REQUIRED_MODULES=("logging.sh" "helpers.sh" "manifest.sh" "common.sh" "config.sh" "cli.sh" "disk.sh" "apps.sh" "commands.sh")
+REQUIRED_MODULES=("logging.sh" "helpers.sh" "manifest.sh" "common.sh" "config.sh" "cli.sh" "disk.sh" "apps.sh" "plan.sh" "commands.sh")
 for _mod in "${REQUIRED_MODULES[@]}"; do
   if [ ! -f "$LIB_DIR/$_mod" ]; then
     printf 'Syn-Syu missing module %s in %s. Please reinstall syn-syu to restore required libraries.\n' "$_mod" "$LIB_DIR" >&2
@@ -103,11 +107,13 @@ done
 readonly SYN_CORE_BIN="${SYN_CORE_BIN:-$(command -v synsyu_core 2>/dev/null || echo /usr/bin/synsyu_core)}"
 readonly DEFAULT_CONFIG_PATH="$HOME/.config/syn-syu/config.toml"
 readonly DEFAULT_GROUPS_PATH="$HOME/.config/syn-syu/groups.toml"
-readonly DEFAULT_MANIFEST="/tmp/syn-syu_manifest.json"
+readonly DEFAULT_MANIFEST="$HOME/.config/syn-syu/manifest.json"
+readonly DEFAULT_PLAN_PATH="$HOME/.config/syn-syu/plan.json"
 
 CONFIG_PATH=""
 GROUPS_PATH="$DEFAULT_GROUPS_PATH"
 SYN_MANIFEST_PATH="$DEFAULT_MANIFEST"
+PLAN_PATH="$DEFAULT_PLAN_PATH"
 LOG_VERBOSE=0
 LOG_LEVEL="info"
 LOG_RETENTION_DAYS=0
@@ -119,6 +125,8 @@ NO_REPO=0
 NO_CONFIRM=1
 QUIET=0
 JSON_OUTPUT=0
+STRICT_MODE=0
+EDIT_PLAN=0
 declare -a INCLUDE_PATTERNS=()
 declare -a EXCLUDE_PATTERNS=()
 AUR_HELPER=""
@@ -135,6 +143,8 @@ SPACE_CHECK_PATH="/"
 CLEAN_KEEP_VERSIONS=2
 CLEAN_REMOVE_ORPHANS=0
 CLEAN_CHECK_PACNEW=1
+OFFLINE=0
+FULL_PATH=0
 APPLICATIONS_FLATPAK=0
 APPLICATIONS_FWUPD=0
 APPLICATIONS_FLATPAK_CLI=""
@@ -151,6 +161,7 @@ trap 'handle_interrupt' INT
 main() {
   ensure_prerequisites
   parse_cli "$@"
+  parse_post_command_flags "$@"
   load_config
   log_init
   if [ "$NO_AUR" = "1" ] && [ "$NO_REPO" = "1" ]; then

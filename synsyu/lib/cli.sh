@@ -30,6 +30,14 @@ parse_cli() {
         REBUILD_MANIFEST=1
         shift
         ;;
+      --plan)
+        PLAN_PATH="$2"
+        shift 2
+        ;;
+      --edit-plan|--edit)
+        EDIT_PLAN=1
+        shift
+        ;;
       --dry-run)
         DRY_RUN=1
         shift
@@ -44,6 +52,14 @@ parse_cli() {
         ;;
       --verbose)
         LOG_VERBOSE=1
+        shift
+        ;;
+      --full-path)
+        FULL_PATH=1
+        shift
+        ;;
+      --offline)
+        OFFLINE=1
         shift
         ;;
       --quiet|-q)
@@ -65,6 +81,10 @@ parse_cli() {
       --helper)
         AUR_HELPER="$2"
         shift 2
+        ;;
+      --strict)
+        STRICT_MODE=1
+        shift
         ;;
       --include)
         INCLUDE_PATTERNS+=("$2")
@@ -150,4 +170,60 @@ parse_cli() {
   if [ -z "$COMMAND" ]; then
     COMMAND="sync"
   fi
+}
+
+#--- parse_post_command_flags
+# Allow common flags to appear after the command name.
+parse_post_command_flags() {
+  local -a rest=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --with-flatpak)
+        APPLICATIONS_FLATPAK=1
+        APPLICATIONS_FLATPAK_CLI=1
+        ;;
+      --no-flatpak)
+        APPLICATIONS_FLATPAK=0
+        APPLICATIONS_FLATPAK_CLI=0
+        ;;
+      --with-fwupd)
+        APPLICATIONS_FWUPD=1
+        APPLICATIONS_FWUPD_CLI=1
+        ;;
+      --no-fwupd)
+        APPLICATIONS_FWUPD=0
+        APPLICATIONS_FWUPD_CLI=0
+        ;;
+      --offline)
+        OFFLINE=1
+        ;;
+      --verbose)
+        LOG_VERBOSE=1
+        ;;
+      --full-path)
+        FULL_PATH=1
+        ;;
+      --config)
+        CONFIG_PATH="$2"
+        shift
+        ;;
+      --manifest)
+        SYN_MANIFEST_PATH="$2"
+        shift
+        ;;
+      --plan)
+        PLAN_PATH="$2"
+        shift
+        ;;
+      --groups)
+        GROUPS_PATH="$2"
+        shift
+        ;;
+      *)
+        rest+=("$1")
+        ;;
+    esac
+    shift
+  done
+  COMMAND_ARGS=("${rest[@]}")
 }

@@ -96,6 +96,14 @@ dispatch_command() {
     group)
       cmd_group "${COMMAND_ARGS[@]}"
       ;;
+    helper)
+      if [ "${#COMMAND_ARGS[@]}" -lt 1 ]; then
+        log_error "E110" "helper command requires a helper name"
+        exit 110
+      fi
+      AUR_HELPER="${COMMAND_ARGS[0]}"
+      log_info "HELPER" "AUR helper set to $AUR_HELPER for this session"
+      ;;
     inspect)
       cmd_inspect "${COMMAND_ARGS[@]}"
       ;;
@@ -110,6 +118,18 @@ dispatch_command() {
       ;;
     export)
       cmd_export "${COMMAND_ARGS[@]}"
+      ;;
+    helpers)
+      cmd_helpers
+      ;;
+    config)
+      cmd_config "${COMMAND_ARGS[@]}"
+      ;;
+    groups-edit)
+      cmd_groups_edit
+      ;;
+    plan)
+      cmd_plan
       ;;
     flatpak)
       cmd_flatpak
@@ -162,8 +182,8 @@ cmd_core() {
     if [ "$LOG_VERBOSE" = "1" ]; then
       args+=("--verbose")
     fi
-    if [ "${MIN_FREE_SPACE_BYTES:-0}" -gt 0 ]; then
-      args+=("--min-free-gb" "$(bytes_to_gb_string "$MIN_FREE_SPACE_BYTES")")
+    if [ "${OFFLINE:-0}" = "1" ]; then
+      args+=("--offline")
     fi
     "$core_bin" "${args[@]}" || exit $?
   else
@@ -656,6 +676,42 @@ cmd_log() {
   ls -1t "$dir"/*.log 2>/dev/null | head -n 10
 }
 
+#--- cmd_helpers
+cmd_helpers() {
+  detect_helpers
+  if [ "${#DETECTED_HELPERS[@]}" -eq 0 ]; then
+    log_warn "HELPER" "No AUR helpers detected in PATH"
+    return 1
+  fi
+  printf 'Detected AUR helpers:\n'
+  local idx=1 helper
+  for helper in "${DETECTED_HELPERS[@]}"; do
+    printf '  [%d] %s\n' "$idx" "$helper"
+    idx=$((idx + 1))
+  done
+  printf 'Select default helper [1-%d] (current: %s): ' "${#DETECTED_HELPERS[@]}" "${AUR_HELPER:-<none>}"
+  local choice
+  read -r choice
+  if [ -z "$choice" ]; then
+    log_warn "HELPER" "No selection made; default unchanged."
+    return 0
+  fi
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#DETECTED_HELPERS[@]}" ]; then
+    log_error "HELPER" "Invalid selection."
+    return 1
+  fi
+  local selected
+  selected="${DETECTED_HELPERS[$((choice - 1))]}"
+  if update_helper_default "$selected"; then
+    AUR_HELPER="$selected"
+    log_info "HELPER" "Default AUR helper set to $selected in config."
+    printf 'Default AUR helper set to %s in config.\n' "$selected"
+  else
+    log_error "HELPER" "Failed to update config with helper $selected"
+    return 1
+  fi
+}
+
 #--- cmd_help
 cmd_help() {
   cat <<'EOF'
@@ -666,6 +722,7 @@ Usage: syn-syu [flags] <command> [args]
 Commands:
   sync              Update all packages per manifest
   core              Rebuild manifest via synsyu_core
+  plan              Build an update plan (summary + JSON file)
   aur               Update only AUR packages
   repo              Update only repo packages
   flatpak           Apply Flatpak application updates
@@ -673,17 +730,22 @@ Commands:
   apps              Apply both Flatpak and firmware updates
   update <pkgs...>  Update specific packages
   group <name>      Update package group defined in groups.toml
+  helper <name>     Use the specified AUR helper for this run
+  helpers           Detect available AUR helpers and set default
   inspect <pkg>     Show manifest detail for package
   check             Summarize manifest contents
   clean             Prune caches and remove orphans
   log               List recent Syn-Syu log files
   export            Export package lists for replication
   help              Display this help message
+  config            Open config.toml in \$EDITOR (creates from example if missing)
+  groups-edit       Open groups.toml in \$EDITOR (creates if missing)
   version           Show version information
 
 Flags:
   --config <path>   Use alternate configuration file
   --manifest <path> Override manifest location
+  --plan <path>     Override plan output location
   --rebuild         Force manifest rebuild before command
   --dry-run         Simulate actions without applying
   --no-aur          Disable AUR operations
@@ -692,9 +754,13 @@ Flags:
   --groups <path>   Override group configuration path
   --quiet, -q       Suppress non-essential output
   --json            JSON output for check/inspect
+  --edit-plan       Open the plan file in \$EDITOR after creation
+  --offline         Skip network calls during manifest build (no AUR detection)
+  --full-path       Expand tilde/relative manifest path to full absolute path
   --confirm         Ask for confirmation in helpers (drop --noconfirm)
   --noconfirm       Force non-interactive operations (default)
   --helper <name>   Force a specific AUR helper
+  --strict          Fail plan when any source reports errors
   --include <regex> Include only packages matching regex (repeatable)
   --exclude <regex> Exclude packages matching regex (repeatable)
   --min-free-gb <N> Override required free space buffer in gigabytes
@@ -709,4 +775,113 @@ EOF
 #--- cmd_version
 cmd_version() {
   printf 'Syn-Syu orchestrator 0.13\n'
+}
+
+#--- resolve_editor
+resolve_editor() {
+  local editor="${EDITOR:-}"
+  if [ -z "$editor" ]; then
+    if command -v nano >/dev/null 2>&1; then
+      editor="nano"
+    elif command -v vi >/dev/null 2>&1; then
+      editor="vi"
+    fi
+  fi
+  if [ -z "$editor" ]; then
+    log_error "EDITOR" "No editor available; set \$EDITOR"
+    return 1
+  fi
+  printf '%s' "$editor"
+}
+
+#--- ensure_config_seed
+ensure_config_seed() {
+  local target="$1"
+  if [ -f "$target" ]; then
+    return 0
+  fi
+  local dir
+  dir="$(dirname "$target")"
+  mkdir -p "$dir"
+  local -a candidates=(
+    "$SCRIPT_DIR/../examples/config.toml"
+    "$LIB_DIR/../examples/config.toml"
+    "/usr/share/syn-syu/examples/config.toml"
+  )
+  local seed=""
+  for c in "${candidates[@]}"; do
+    if [ -f "$c" ]; then
+      seed="$c"
+      break
+    fi
+  done
+  if [ -n "$seed" ]; then
+    cp "$seed" "$target"
+    log_info "CONFIG" "Seeded config from $seed"
+  else
+    printf '# Syn-Syu configuration\n[core]\nmanifest_path="~/.config/syn-syu/manifest.json"\n' >"$target"
+    log_warn "CONFIG" "No example config found; wrote minimal stub to $target"
+  fi
+}
+
+#--- ensure_groups_seed
+ensure_groups_seed() {
+  local target="$1"
+  if [ -f "$target" ]; then
+    return 0
+  fi
+  local dir
+  dir="$(dirname "$target")"
+  mkdir -p "$dir"
+  printf '# Syn-Syu groups configuration\n# Define groups as TOML tables\n# [group.example]\n# packages = ["foo", "bar"]\n' >"$target"
+  log_info "GROUPS" "Created stub groups file at $target"
+}
+
+#--- require_tty_for_edit
+require_tty_for_edit() {
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    printf '%s\n' "$1"
+    return 1
+  fi
+  return 0
+}
+
+#--- expand_path
+expand_path() {
+  local raw="$1"
+  python3 - "$raw" <<'PY' 2>/dev/null || printf '%s' "$raw"
+import os, sys
+path = sys.argv[1]
+print(os.path.expanduser(path))
+PY
+}
+
+#--- cmd_config
+cmd_config() {
+  if [ "${1:-}" = "--groups" ]; then
+    cmd_groups_edit
+    return
+  fi
+  local path="${CONFIG_PATH:-$DEFAULT_CONFIG_PATH}"
+  path="$(expand_path "$path")"
+  if ! require_tty_for_edit "Config path: $path"; then
+    exit 1
+  fi
+  ensure_config_seed "$path"
+  local editor
+  editor="$(resolve_editor)" || exit 1
+  "$editor" "$path"
+}
+
+#--- cmd_groups_edit
+cmd_groups_edit() {
+  local path="${GROUPS_PATH:-$DEFAULT_GROUPS_PATH}"
+  path="$(expand_path "$path")"
+  if ! require_tty_for_edit "Groups path: $path"; then
+    exit 1
+  fi
+  ensure_groups_seed "$path"
+  local editor
+  editor="$(resolve_editor)" || exit 1
+  "$editor" "$path"
 }

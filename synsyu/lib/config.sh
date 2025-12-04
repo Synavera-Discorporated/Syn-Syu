@@ -60,6 +60,7 @@ clean = data.get("clean", {})
 logging = data.get("logging", {})
 space = data.get("space", {})
 applications = data.get("applications", {})
+helpers_section = data.get("helpers", {})
 
 log_directory = logging.get("directory") or core.get("log_directory", "")
 
@@ -75,12 +76,14 @@ def to_bytes(value):
 settings = {
     "manifest": core.get("manifest_path", ""),
     "helper_priority": helpers.get("priority", []),
+    "helper_default": helpers_section.get("default", ""),
     "log_directory": log_directory,
     "log_level": logging.get("level", ""),
     "log_retention_days": logging.get("retention_days"),
     "log_retention_megabytes": logging.get("retention_megabytes"),
     "batch_size": core.get("batch_size", 10),
     "space_min_free_bytes": to_bytes(space.get("min_free_gb")),
+    "space_mode": space.get("mode", "warn"),
     "snapshots_enabled": snapshots.get("enabled", False),
     "snapshot_pre": snapshots.get("pre_command", ""),
     "snapshot_post": snapshots.get("post_command", ""),
@@ -100,11 +103,12 @@ PY
     py_output=""
   fi
 
-  local manifest_path helper_line log_dir batch_size log_level retention_days retention_mb
+  local manifest_path helper_line helper_default log_dir batch_size log_level retention_days retention_mb
   local apps_flatpak apps_fwupd
   if [ -n "$py_output" ]; then
     manifest_path="$(printf '%s' "$py_output" | jq -r '.manifest // ""')"
     helper_line="$(printf '%s' "$py_output" | jq -r '.helper_priority | join(" ")')"
+    helper_default="$(printf '%s' "$py_output" | jq -r '.helper_default // empty')"
     log_dir="$(printf '%s' "$py_output" | jq -r '.log_directory // ""')"
     log_level="$(printf '%s' "$py_output" | jq -r '.log_level // empty')"
     retention_days="$(printf '%s' "$py_output" | jq -r '.log_retention_days // empty')"
@@ -114,6 +118,8 @@ PY
     apps_fwupd="$(printf '%s' "$py_output" | jq -r '.apps_fwupd_enabled // false')"
     local min_free_bytes_config
     min_free_bytes_config="$(printf '%s' "$py_output" | jq -r '.space_min_free_bytes // empty')"
+    local space_mode
+    space_mode="$(printf '%s' "$py_output" | jq -r '.space_mode // "warn"')"
     local snapshots_enabled
     snapshots_enabled="$(printf '%s' "$py_output" | jq -r '.snapshots_enabled')"
     local snapshot_pre snapshot_post snapshot_require
@@ -137,6 +143,10 @@ PY
       HELPER_PRIORITY=($helper_line)
     else
       HELPER_PRIORITY=($(printf '%s\n' "${HELPER_CANDIDATES[@]}"))
+    fi
+
+    if [ -z "${AUR_HELPER:-}" ] && [ -n "$helper_default" ]; then
+      AUR_HELPER="$helper_default"
     fi
 
     if [ -n "$log_dir" ]; then
@@ -175,6 +185,7 @@ PY
         MIN_FREE_SPACE_BYTES="$min_free_bytes_config"
       fi
     fi
+    SPACE_MODE="$space_mode"
 
     if [ "$snapshots_enabled" = "true" ]; then
       SNAPSHOTS_ENABLED=1

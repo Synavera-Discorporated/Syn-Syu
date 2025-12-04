@@ -6,17 +6,21 @@ updates across official repositories and the Arch User Repository.
 
 ## Components
 
-- **synsyu_core** – Rust binary that enumerates installed packages, queries repo
-  metadata via `pacman`, and consults the AUR RPC API. It emits a structured
-  JSON manifest at `/tmp/syn-syu_manifest.json` (configurable) describing the
-  freshest source for every package.
-- **syn-syu** – Bash CLI that parses the manifest, selects helpers, and executes
-  updates per user intent. Logging follows the Synavera Script Etiquette and is
-  kept under `~/.local/share/syn-syu/` by default.
+- **synsyu_core** – Rust binary that enumerates installed packages and emits a
+  structured JSON manifest at `~/.config/syn-syu/manifest.json` (configurable)
+  describing the current state: what is installed and which source it came from.
+- **syn-syu** – Bash CLI that parses the manifest, builds update plans, selects
+  helpers, and executes updates per user intent. Logging follows the Synavera
+  Script Etiquette and is kept under `~/.local/share/syn-syu/` by default.
+- **syn-syu plan** – Builds an update plan from fresh sources (pacman, AUR,
+  Flatpak, fwupd when enabled), writes it to `~/.config/syn-syu/plan.json`, and
+  prints a concise summary (with optional strict/JSON modes).
 
 ## Manifest Schema
 
-`synsyu_core` writes a JSON document with the following shape:
+`synsyu_core` writes a JSON document with the following shape. This manifest is
+the user-owned source of truth for the desired system state and is persisted in
+the Syn-Syu config directory (not under `/tmp`).
 
 ```json
 {
@@ -24,30 +28,26 @@ updates across official repositories and the Arch User Repository.
     "generated_at": "2024-11-04T18:41:00Z",
     "generated_by": "synsyu_core",
     "total_packages": 243,
-    "repo_candidates": 156,
-    "aur_candidates": 87,
-    "updates_available": 12
+    "pacman_packages": 156,
+    "aur_packages": 87,
+    "local_packages": 0,
+    "unknown_packages": 0
   },
   "packages": {
     "bash": {
       "installed_version": "5.2.32-1",
-      "version_repo": "5.2.32-1",
-      "version_aur": null,
-      "newer_version": "5.2.32-1",
+      "repository": "core",
       "source": "PACMAN",
-      "update_available": false,
-      "notes": null,
-      "download_size_repo": 5619712,
-      "installed_size_repo": 20545536,
-      "download_size_selected": null,
-      "installed_size_selected": null
+      "installed_size": 20545536,
+      "install_date": "2024-11-01T12:00:00Z",
+      "validated_by": "Signature"
     }
   }
 }
 ```
 
-The Bash orchestrator relies on the `source` and `update_available` fields to
-route packages through `pacman` or the preferred AUR helper.
+The Bash orchestrator consumes the manifest as the authoritative record of what
+is installed; update planning and disk checks live elsewhere.
 
 When Flatpak or firmware updates are requested, the manifest also includes an
 `applications` block capturing the chosen sources (`flatpak` / `fwupd`), whether
@@ -150,6 +150,7 @@ check_pacnew = true
 
 [space]
 min_free_gb = 100
+mode = "warn"
 ```
 
 The `[applications]` section controls the default inclusion of Flatpak and
@@ -157,8 +158,10 @@ firmware updates when building the manifest and during subsequent `sync`
 operations; CLI flags `--with-flatpak` and `--with-fwupd` override the defaults.
 
 The `[space]` section defines `min_free_gb`, a buffer that must remain free on
-disk before updates proceed. The orchestrator also honours `disk_extra_margin_mb`
-for additional breathing room.
+disk before updates proceed, and `mode`, which controls behaviour when the
+buffer is not met. `mode = "warn"` (default) emits a warning; `mode = "enforce"`
+fails the plan when the buffer is below the configured threshold. The
+orchestrator also honours `disk_extra_margin_mb` for additional breathing room.
 
 ## Logging
 

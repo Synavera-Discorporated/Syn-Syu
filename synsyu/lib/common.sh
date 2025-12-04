@@ -16,6 +16,16 @@
 #   - Explicit, side-effect-free helpers for predictability
 #------------------------------------------------------------
 
+#--- expand_path_simple
+expand_path_simple() {
+  local raw="${1:-}"
+  python3 - "$raw" <<'PY'
+import os, sys
+path = sys.argv[1] if len(sys.argv) > 1 else ""
+print(os.path.abspath(os.path.expanduser(path)))
+PY
+}
+
 #--- convert_gb_to_bytes
 convert_gb_to_bytes() {
   local gb_input="${1:-0}"

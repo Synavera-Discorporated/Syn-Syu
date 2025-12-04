@@ -2,23 +2,27 @@
 
 Syn-Syu is Synavera's conscious successor to `pacman -Syu`. A Bash orchestrator
 (`syn-syu`) works together with a Rust backend (`synsyu_core`) to build a
-manifest of safe package upgrades, apply repo and AUR updates selectively, and
-produce detailed logs for review.
+manifest of the current system state (installed packages with source), build
+update plans from fresh sources, apply repo/AUR/app/firmware updates
+selectively, and produce detailed logs for review.
 
 ## Features
 
 - Coordinates pacman and AUR helpers with explicit include/exclude filters.
-- Generates a JSON manifest via `synsyu_core` for dry runs, reporting, and disk
-  safety checks.
+- Generates a JSON manifest via `synsyu_core` as the authoritative state, plus
+  update plans from fresh sources (pacman, AUR, optional Flatpak/fwupd).
+- Captures install metadata (install date, validation root, truncated package
+  or firmware hashes) for audit-friendly manifests and plans without leaking
+  full fingerprints.
 - Configurable logging level with time and size-based log retention policies.
 - Validates download, build, and install footprint before updates, applying a
   configurable free-space buffer.
 - Optional application updates for Flatpak and firmware (fwupd) with dedicated
-  commands or opt-in flags that now also seed the manifest.
+  commands or opt-in flags that now also seed the manifest and plan.
 - Supports guided or advanced install workflows through optional tooling.
 - Logs every action with timestamped entries to simplify auditing.
 - Provides commands for sync, targeted updates, group operations, cleaning, and
-  inspection.
+  inspection, planning, and helper selection.
 
 See `docs/Syn-Syu_Overview.md` for a deeper walkthrough of the architecture and
 CLI behaviour.
@@ -61,6 +65,7 @@ file is provided at `examples/config.toml`. Key options include:
 
 - `core.manifest_path` – output path for the generated manifest.
 - `space.min_free_gb` – reserved buffer that must remain free after updates.
+- `space.mode` – `"warn"` (default) logs a warning if free space is below the buffer; `"enforce"` fails the plan when the buffer is not met.
 - `logging.level` – choose from `debug`, `info`, `warn`, `error`, or `none`.
 - `logging.retention_days` / `logging.retention_megabytes` – prune old logs by
   age or aggregate size.

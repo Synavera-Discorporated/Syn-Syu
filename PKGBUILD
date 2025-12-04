@@ -13,8 +13,22 @@ source=("syn-syu::git+https://github.com/Synavera-Discorporated/Syn-Syu.git")
 sha256sums=('SKIP')
 
 build() {
+  cd "$srcdir/syn-syu"
+
+  export SYN_SYU_BUILD_SOURCE="aur"
+  export SYN_SYU_PKGVER="$pkgver"
+  export SYN_SYU_PKGREL="$pkgrel"
+  export SYN_SYU_EPOCH="${epoch:-0}"
+
+  if git -C "$srcdir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    export SYN_SYU_AUR_COMMIT="$(git -C "$srcdir" rev-parse --short=12 HEAD)"
+  fi
+  if git -C "$srcdir/syn-syu" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    export SYN_SYU_GIT_COMMIT="$(git -C "$srcdir/syn-syu" rev-parse --short=12 HEAD)"
+  fi
+
   cd "$srcdir/syn-syu/synsyu_core"
-  cargo build --release
+  cargo build --release --locked
 }
 
 package() {
@@ -33,6 +47,7 @@ package() {
   install -Dm644 synsyu/lib/cli.sh      "$pkgdir/usr/lib/syn-syu/cli.sh"
   install -Dm644 synsyu/lib/disk.sh     "$pkgdir/usr/lib/syn-syu/disk.sh"
   install -Dm644 synsyu/lib/apps.sh     "$pkgdir/usr/lib/syn-syu/apps.sh"
+  install -Dm644 synsyu/lib/plan.sh     "$pkgdir/usr/lib/syn-syu/plan.sh"
   install -Dm644 synsyu/lib/commands.sh "$pkgdir/usr/lib/syn-syu/commands.sh"
 
   # Docs and examples

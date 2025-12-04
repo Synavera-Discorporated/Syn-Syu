@@ -24,7 +24,7 @@
 #   - Modular function design for testability
 #============================================================
 
-readonly HELPER_CANDIDATES=(paru yay trizen pikaur aura pacaur pamac aurman pakku)
+readonly HELPER_CANDIDATES=(paru yay pikaur trizen aura pacaur pamac aurman pakku)
 
 #--- detect_helpers
 detect_helpers() {
@@ -53,4 +53,35 @@ select_helper() {
     return 0
   fi
   return 1
+}
+
+#--- update_helper_default
+update_helper_default() {
+  local helper="$1"
+  local cfg="${CONFIG_PATH:-$DEFAULT_CONFIG_PATH}"
+  local cfg_dir
+  cfg_dir="$(dirname "$cfg")"
+  mkdir -p "$cfg_dir"
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf 'python3 required to update config\n' >&2
+    return 1
+  fi
+  python3 - "$helper" "$cfg" <<'PY' || return 1
+import sys, os, tomllib, tomli_w
+
+helper = sys.argv[1]
+cfg_path = sys.argv[2]
+data = {}
+if os.path.isfile(cfg_path):
+    with open(cfg_path, "rb") as handle:
+        try:
+            data = tomllib.load(handle)
+        except Exception:
+            data = {}
+helpers = data.get("helpers") or {}
+helpers["default"] = helper
+data["helpers"] = helpers
+with open(cfg_path, "wb") as handle:
+    tomli_w.dump(data, handle)
+PY
 }

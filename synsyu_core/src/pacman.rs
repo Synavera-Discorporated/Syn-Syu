@@ -27,15 +27,18 @@
     - Reusable helpers for external command diagnostics
 ============================================================*/
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::process::Stdio;
 use std::str::FromStr;
 
+use reqwest::Client;
+use serde::Deserialize;
 use tokio::process::Command;
 
 use crate::error::{Result, SynsyuError};
 use crate::package_info::VersionInfo;
+use urlencoding::encode;
 
 /// Represents a package currently installed on the system.
 #[derive(Debug, Clone)]
@@ -44,10 +47,14 @@ pub struct InstalledPackage {
     pub version: String,
     pub repository: Option<String>,
     pub installed_size: Option<u64>,
+    pub install_date: Option<String>,
+    pub validated_by: Option<String>,
+    pub package_hash: Option<String>,
 }
 
 /// Enumerate all installed packages via `pacman -Qi`.
 pub async fn enumerate_installed_packages() -> Result<Vec<InstalledPackage>> {
+    let foreign = detect_foreign_packages().await.unwrap_or_default();
     let output = Command::new("pacman")
         .arg("-Qi")
         .stdout(Stdio::piped())
@@ -74,6 +81,9 @@ pub async fn enumerate_installed_packages() -> Result<Vec<InstalledPackage>> {
         let mut version: Option<String> = None;
         let mut repository: Option<String> = None;
         let mut installed_size: Option<u64> = None;
+        let mut install_date: Option<String> = None;
+        let mut validated_by: Option<String> = None;
+        let mut package_hash: Option<String> = None;
 
         for line in block.lines() {
             if let Some((raw_key, raw_value)) = line.split_once(':') {
@@ -83,18 +93,31 @@ pub async fn enumerate_installed_packages() -> Result<Vec<InstalledPackage>> {
                     "Name" => name = Some(value.to_string()),
                     "Version" => version = Some(value.to_string()),
                     "Repository" => repository = Some(value.to_string()),
+                    "Install Date" => install_date = Some(value.to_string()),
                     "Installed Size" => installed_size = parse_pacman_size(value),
+                    "Validated By" => validated_by = Some(value.to_string()),
+                    "SHA-256 Sum" => package_hash = Some(value.to_string()),
                     _ => {}
                 }
             }
         }
 
-        if let (Some(name), Some(version)) = (name, version) {
+        if let (Some(mut name), Some(version)) = (name, version) {
+            if repository.is_none() {
+                if foreign.contains(&name) {
+                    repository = Some("local".to_string());
+                } else {
+                    repository = Some("pacman".to_string());
+                }
+            }
             packages.push(InstalledPackage {
-                name,
+                name: std::mem::take(&mut name),
                 version,
                 repository,
                 installed_size,
+                install_date,
+                validated_by,
+                package_hash,
             });
         }
     }
@@ -203,6 +226,86 @@ pub async fn compare_versions(local: &str, remote: &str) -> Result<std::cmp::Ord
     })?;
 
     Ok(ordering.cmp(&0))
+}
+
+async fn detect_foreign_packages() -> Result<HashSet<String>> {
+    let output = Command::new("pacman")
+        .arg("-Qm")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await;
+
+    let Ok(output) = output else {
+        return Ok(HashSet::new());
+    };
+    if !output.status.success() {
+        return Ok(HashSet::new());
+    }
+    let stdout = String::from_utf8(output.stdout).unwrap_or_default();
+    let set = stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(|s| s.to_string())
+        .collect();
+    Ok(set)
+}
+
+/// Query AUR to see which package names exist there.
+pub async fn aur_presence(names: &[String], offline: bool) -> Result<HashSet<String>> {
+    if offline || names.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let client = Client::new();
+    let mut found = HashSet::new();
+    const CHUNK: usize = 100;
+    for chunk in names.chunks(CHUNK) {
+        let mut query = String::from("https://aur.archlinux.org/rpc/?v=5&type=info");
+        for name in chunk {
+            query.push_str("&arg[]=");
+            query.push_str(encode(name).as_ref());
+        }
+        let resp = client
+            .get(&query)
+            .send()
+            .await
+            .map_err(|err| SynsyuError::Network(format!("AUR request failed: {err}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(SynsyuError::Network(format!(
+                "AUR request failed with status {status}"
+            )));
+        }
+        let body: AurResponse = resp
+            .json()
+            .await
+            .map_err(|err| SynsyuError::Network(format!("AUR response parse failed: {err}")))?;
+        if body.resp_type.as_deref() != Some("multiinfo") {
+            continue;
+        }
+        if let Some(results) = body.results {
+            for entry in results {
+                if let Some(name) = entry.name {
+                    found.insert(name);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+#[derive(Debug, Deserialize)]
+struct AurResponse {
+    #[serde(rename = "type")]
+    resp_type: Option<String>,
+    resultcount: Option<u64>,
+    results: Option<Vec<AurEntry>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AurEntry {
+    #[serde(rename = "Name")]
+    name: Option<String>,
 }
 
 fn parse_pacman_size(value: &str) -> Option<u64> {

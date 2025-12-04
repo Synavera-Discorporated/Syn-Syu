@@ -4,18 +4,20 @@
   Etiquette: Synavera Script Etiquette — Rust Profile v1.1.1
   ------------------------------------------------------------
   Purpose:
-    Construct the Syn-Syu manifest by reconciling installed
-    packages against repo and AUR sources.
+    Construct the Syn-Syu manifest as a snapshot of the
+    user-defined desired system state: what is installed right
+    now, with source attribution.
 
   Security / Safety Notes:
-    Manifest data is written to operator-controlled paths; no
-    privileged operations are performed.
+    Manifest data is written to operator-controlled paths with
+    private permissions; no privileged operations are performed.
 
   Dependencies:
     serde for JSON serialization.
 
   Operational Scope:
-    Consumed by the Bash orchestrator to decide update flows.
+    Consumed by the Bash orchestrator as the authoritative
+    snapshot of installed state.
 
   Revision History:
     2024-11-04 COD  Authored manifest builder.
@@ -26,23 +28,27 @@
     - Rich metadata for audit and observability
 ============================================================*/
 
-use std::collections::{BTreeMap, HashMap};
-use std::fs::File;
+use std::collections::BTreeMap;
+use std::fs::{self, File};
 use std::path::Path;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 
 use crate::error::{Result, SynsyuError};
 use crate::logger::Logger;
-use crate::package_info::VersionInfo;
-use crate::pacman::{compare_versions, InstalledPackage};
+use crate::pacman::InstalledPackage;
 
 /// Wrapper representing the full manifest document.
 #[derive(Debug, Serialize)]
 pub struct ManifestDocument {
     pub metadata: ManifestMetadata,
     pub packages: BTreeMap<String, ManifestEntry>,
+    pub packages_by_source: Vec<PackageGroup>,
+    pub applications: Applications,
 }
 
 /// Metadata block describing manifest context.
@@ -51,42 +57,40 @@ pub struct ManifestMetadata {
     pub generated_at: String,
     pub generated_by: String,
     pub total_packages: usize,
-    pub repo_candidates: usize,
-    pub aur_candidates: usize,
-    pub updates_available: usize,
-    pub download_size_total: u64,
-    pub build_size_total: u64,
-    pub install_size_total: u64,
-    pub transient_size_total: u64,
-    pub min_free_bytes: u64,
-    pub required_space_total: u64,
-    pub available_space_bytes: u64,
-    pub space_checked_path: String,
+    pub pacman_packages: usize,
+    pub aur_packages: usize,
+    pub local_packages: usize,
+    pub unknown_packages: usize,
 }
 
 /// Per-package manifest entry.
 #[derive(Debug, Serialize)]
 pub struct ManifestEntry {
     pub installed_version: String,
-    pub version_repo: Option<String>,
-    pub version_aur: Option<String>,
-    pub newer_version: String,
+    pub repository: Option<String>,
     pub source: PackageSource,
-    pub update_available: bool,
-    pub notes: Option<String>,
-    pub download_size_repo: Option<u64>,
-    pub installed_size_repo: Option<u64>,
-    pub download_size_aur: Option<u64>,
-    pub installed_size_aur: Option<u64>,
-    pub download_size_selected: Option<u64>,
-    pub installed_size_selected: Option<u64>,
-    pub install_size_estimate: Option<u64>,
-    pub build_size_estimate: Option<u64>,
-    pub transient_size_estimate: Option<u64>,
+    pub installed_size: Option<u64>,
+    pub install_date: Option<String>,
+    pub validated_by: Option<String>,
+    pub package_hash: Option<String>,
+}
+
+/// Group of package names for a particular source.
+#[derive(Debug, Serialize)]
+pub struct PackageGroup {
+    pub source: PackageSource,
+    pub count: usize,
+    pub packages: Vec<String>,
+}
+
+/// Optional application/firmware state.
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct Applications {
+    pub fwupd: Option<crate::fwupd::FwupdState>,
 }
 
 /// Source classification for an update candidate.
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum PackageSource {
     Pacman,
@@ -98,235 +102,142 @@ pub enum PackageSource {
 /// Build a manifest from installed package data.
 pub async fn build_manifest(
     packages: &[InstalledPackage],
-    repo_versions: &HashMap<String, VersionInfo>,
-    aur_versions: &HashMap<String, VersionInfo>,
-    min_free_bytes: u64,
     logger: &Logger,
 ) -> Result<ManifestDocument> {
     let mut entries = BTreeMap::new();
-    let mut repo_candidates = 0usize;
-    let mut aur_candidates = 0usize;
-    let mut updates_available = 0usize;
-    let mut download_total = 0u64;
-    let mut build_total = 0u64;
-    let mut install_total = 0u64;
-    let mut transient_total = 0u64;
+    let mut grouped: BTreeMap<PackageSource, Vec<String>> = BTreeMap::new();
+    let mut pacman_packages = 0usize;
+    let mut aur_packages = 0usize;
+    let mut local_packages = 0usize;
+    let mut unknown_packages = 0usize;
 
     for package in packages {
-        let repo_info = repo_versions.get(&package.name);
-        let aur_info = aur_versions.get(&package.name);
-
-        if repo_info.is_some() {
-            repo_candidates += 1;
-        }
-        if aur_info.is_some() {
-            aur_candidates += 1;
-        }
-
-        let resolved = resolve_package(package, repo_info, aur_info).await?;
-        if resolved.update_available {
-            updates_available += 1;
-            if let Some(size) = resolved.download_size_selected {
-                download_total = download_total.saturating_add(size);
-            }
-            if let Some(size) = resolved.build_size_estimate {
-                build_total = build_total.saturating_add(size);
-            }
-            if let Some(size) = resolved.install_size_estimate {
-                install_total = install_total.saturating_add(size);
-            }
-            if let Some(size) = resolved.transient_size_estimate {
-                transient_total = transient_total.saturating_add(size);
-            }
+        let resolved = resolve_package(package);
+        match resolved.source {
+            PackageSource::Pacman => pacman_packages += 1,
+            PackageSource::Aur => aur_packages += 1,
+            PackageSource::Local => local_packages += 1,
+            PackageSource::Unknown => unknown_packages += 1,
         }
         logger.debug(
             "MANIFEST",
             format!(
-                "{} → {} via {:?}",
-                package.name, resolved.newer_version, resolved.source
+                "{} @ {} via {:?}",
+                package.name, resolved.installed_version, resolved.source
             ),
         );
 
         entries.insert(package.name.clone(), resolved);
+        grouped
+            .entry(source_from_repo(package.repository.as_deref()))
+            .or_default()
+            .push(package.name.clone());
     }
+
+    let mut packages_by_source: Vec<PackageGroup> = grouped
+        .into_iter()
+        .map(|(src, mut names)| {
+            names.sort();
+            PackageGroup {
+                source: src,
+                count: names.len(),
+                packages: names,
+            }
+        })
+        .collect();
+    packages_by_source.sort_by(|a, b| a.count.cmp(&b.count).then_with(|| a.source.cmp(&b.source)));
 
     let metadata = ManifestMetadata {
         generated_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         generated_by: "synsyu_core".to_string(),
         total_packages: packages.len(),
-        repo_candidates,
-        aur_candidates,
-        updates_available,
-        download_size_total: download_total,
-        build_size_total: build_total,
-        install_size_total: install_total,
-        transient_size_total: transient_total,
-        min_free_bytes,
-        required_space_total: transient_total.saturating_add(min_free_bytes),
-        available_space_bytes: 0,
-        space_checked_path: String::new(),
+        pacman_packages,
+        aur_packages,
+        local_packages,
+        unknown_packages,
     };
 
     Ok(ManifestDocument {
         metadata,
         packages: entries,
+        packages_by_source,
+        applications: Applications::default(),
     })
 }
 
-async fn resolve_package(
-    package: &InstalledPackage,
-    repo_info: Option<&VersionInfo>,
-    aur_info: Option<&VersionInfo>,
-) -> Result<ManifestEntry> {
-    let mut source = PackageSource::Unknown;
-    let mut target_version = package.version.clone();
-    let mut update_available = false;
-    let mut notes: Option<String> = None;
-
-    let repo_cmp = if let Some(info) = repo_info {
-        Some(compare_versions(&package.version, &info.version).await?)
-    } else {
-        None
-    };
-
-    let aur_cmp = if let Some(info) = aur_info {
-        Some(compare_versions(&package.version, &info.version).await?)
-    } else {
-        None
-    };
-
-    match (repo_info, repo_cmp, aur_info, aur_cmp) {
-        (Some(repo_v), Some(repo_cmp), None, _) => {
-            source = PackageSource::Pacman;
-            target_version = repo_v.version.clone();
-            update_available = repo_cmp == std::cmp::Ordering::Less;
-        }
-        (None, _, Some(aur_v), Some(aur_cmp)) => {
-            source = PackageSource::Aur;
-            target_version = aur_v.version.clone();
-            update_available = aur_cmp == std::cmp::Ordering::Less;
-        }
-        (Some(repo_v), Some(repo_cmp), Some(aur_v), Some(aur_cmp)) => {
-            let repo_vs_aur = compare_versions(&repo_v.version, &aur_v.version).await?;
-            match repo_vs_aur {
-                std::cmp::Ordering::Greater | std::cmp::Ordering::Equal => {
-                    source = PackageSource::Pacman;
-                    target_version = repo_v.version.clone();
-                    update_available = repo_cmp == std::cmp::Ordering::Less;
-                    if aur_cmp == std::cmp::Ordering::Greater {
-                        notes = Some("AUR ahead of repo, but repo chosen per policy".into());
-                    }
-                }
-                std::cmp::Ordering::Less => {
-                    source = PackageSource::Aur;
-                    target_version = aur_v.version.clone();
-                    update_available = aur_cmp == std::cmp::Ordering::Less;
-                }
-            }
-        }
-        (None, _, None, _) => {
-            source = if package.repository.as_deref() == Some("local") {
-                PackageSource::Local
-            } else {
-                PackageSource::Unknown
-            };
-        }
-        _ => {
-            if let Some(repo_v) = repo_info {
-                source = PackageSource::Pacman;
-                target_version = repo_v.version.clone();
-            } else if let Some(aur_v) = aur_info {
-                source = PackageSource::Aur;
-                target_version = aur_v.version.clone();
-            }
-        }
+fn source_from_repo(repo: Option<&str>) -> PackageSource {
+    match repo {
+        Some(name) if name.eq_ignore_ascii_case("aur") => PackageSource::Aur,
+        Some(name) if name.eq_ignore_ascii_case("local") => PackageSource::Local,
+        Some(_) => PackageSource::Pacman,
+        None => PackageSource::Unknown,
     }
+}
 
-    let download_repo = repo_info.and_then(|info| info.download_size);
-    let installed_repo = repo_info.and_then(|info| info.installed_size);
-    let download_aur = aur_info.and_then(|info| info.download_size);
-    let installed_aur = aur_info.and_then(|info| info.installed_size);
-    let local_installed = package.installed_size;
-    let (download_selected, mut installed_selected) = match source {
-        PackageSource::Pacman => (download_repo, installed_repo),
-        PackageSource::Aur => (download_aur, installed_aur),
-        PackageSource::Local => (None, None),
-        PackageSource::Unknown => (
-            download_repo.or(download_aur),
-            installed_repo.or(installed_aur),
-        ),
-    };
+fn resolve_package(package: &InstalledPackage) -> ManifestEntry {
+    let repo = package.repository.clone();
+    let source = source_from_repo(repo.as_deref());
 
-    if installed_selected.is_none() {
-        installed_selected = local_installed;
-    }
-
-    let install_estimate = match (installed_selected, download_selected, source) {
-        (Some(value), _, _) => Some(value),
-        (None, Some(download), PackageSource::Aur) => Some(download.saturating_mul(2)),
-        (None, Some(download), _) => Some(download),
-        _ => None,
-    };
-
-    let build_estimate = match (source, install_estimate, download_selected) {
-        (PackageSource::Pacman, Some(install), _) => {
-            let triple = install.saturating_mul(3);
-            Some(triple / 2 + triple % 2)
-        }
-        (PackageSource::Aur, _, Some(download)) => Some(download.saturating_mul(8)),
-        (PackageSource::Aur, Some(install), None) => Some(install.saturating_mul(3)),
-        _ => None,
-    };
-
-    let transient_estimate = {
-        let download = download_selected.unwrap_or(0);
-        let build = build_estimate.unwrap_or(0);
-        let install = install_estimate.unwrap_or(0);
-        let total = download.saturating_add(build).saturating_add(install);
-        if total == 0 {
-            None
-        } else {
-            Some(total)
-        }
-    };
-
-    Ok(ManifestEntry {
+    ManifestEntry {
         installed_version: package.version.clone(),
-        version_repo: repo_info.map(|info| info.version.clone()),
-        version_aur: aur_info.map(|info| info.version.clone()),
-        newer_version: target_version,
+        repository: repo,
         source,
-        update_available,
-        notes,
-        download_size_repo: download_repo,
-        installed_size_repo: installed_repo,
-        download_size_aur: download_aur,
-        installed_size_aur: installed_aur,
-        download_size_selected: download_selected,
-        installed_size_selected: installed_selected,
-        install_size_estimate: install_estimate,
-        build_size_estimate: build_estimate,
-        transient_size_estimate: transient_estimate,
-    })
+        installed_size: package.installed_size,
+        install_date: package.install_date.clone(),
+        validated_by: package.validated_by.clone(),
+        package_hash: package
+            .package_hash
+            .as_ref()
+            .map(|h| truncate_hash(h.as_str())),
+    }
+}
+
+fn truncate_hash(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() <= 16 {
+        trimmed.to_string()
+    } else {
+        trimmed[..16].to_string()
+    }
 }
 
 /// Persist the manifest to the given path.
 pub fn write_manifest(document: &ManifestDocument, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| {
+        fs::create_dir_all(parent).map_err(|err| {
             SynsyuError::Filesystem(format!(
                 "Failed to create manifest directory {}: {err}",
                 parent.display()
             ))
         })?;
+        #[cfg(unix)]
+        {
+            let perms = fs::Permissions::from_mode(0o700);
+            fs::set_permissions(parent, perms).map_err(|err| {
+                SynsyuError::Filesystem(format!(
+                    "Failed to secure manifest directory {}: {err}",
+                    parent.display()
+                ))
+            })?;
+        }
     }
-    let file = File::create(path).map_err(|err| {
+    let mut file = File::create(path).map_err(|err| {
         SynsyuError::Filesystem(format!(
             "Failed to create manifest file {}: {err}",
             path.display()
         ))
     })?;
-    serde_json::to_writer_pretty(file, document).map_err(|err| {
+    #[cfg(unix)]
+    {
+        let perms = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(path, perms).map_err(|err| {
+            SynsyuError::Filesystem(format!(
+                "Failed to secure manifest file {}: {err}",
+                path.display()
+            ))
+        })?;
+    }
+    serde_json::to_writer_pretty(&mut file, document).map_err(|err| {
         SynsyuError::Filesystem(format!(
             "Failed to write manifest {}: {err}",
             path.display()

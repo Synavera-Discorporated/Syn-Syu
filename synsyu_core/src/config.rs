@@ -126,6 +126,11 @@ impl SynsyuConfig {
     pub fn min_free_bytes(&self) -> u64 {
         self.space.min_free_bytes()
     }
+
+    /// Policy for handling low space relative to the configured buffer.
+    pub fn space_policy(&self) -> SpacePolicy {
+        self.space.policy
+    }
 }
 
 impl Default for SynsyuConfig {
@@ -192,7 +197,14 @@ pub struct CoreConfig {
 
 impl CoreConfig {
     fn default_manifest_path() -> String {
-        "/tmp/syn-syu_manifest.json".to_string()
+        let base = config_dir().unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+                .join(".config")
+        });
+        base.join("syn-syu")
+            .join("manifest.json")
+            .to_string_lossy()
+            .into_owned()
     }
 
     fn default_batch_size() -> usize {
@@ -215,11 +227,17 @@ impl Default for CoreConfig {
 pub struct SpaceConfig {
     #[serde(default = "SpaceConfig::default_min_free_gb")]
     pub min_free_gb: f64,
+    #[serde(default = "SpaceConfig::default_policy")]
+    pub policy: SpacePolicy,
 }
 
 impl SpaceConfig {
     fn default_min_free_gb() -> f64 {
         2.0
+    }
+
+    fn default_policy() -> SpacePolicy {
+        SpacePolicy::Warn
     }
 
     pub fn min_free_bytes(&self) -> u64 {
@@ -235,6 +253,23 @@ impl Default for SpaceConfig {
     fn default() -> Self {
         Self {
             min_free_gb: Self::default_min_free_gb(),
+            policy: Self::default_policy(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum SpacePolicy {
+    Warn,
+    Enforce,
+}
+
+impl std::fmt::Display for SpacePolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpacePolicy::Warn => write!(f, "warn"),
+            SpacePolicy::Enforce => write!(f, "enforce"),
         }
     }
 }
@@ -249,14 +284,7 @@ pub struct HelperConfig {
 
 impl HelperConfig {
     fn default_priority() -> Vec<String> {
-        vec![
-            "paru".into(),
-            "yay".into(),
-            "trizen".into(),
-            "pikaur".into(),
-            "aura".into(),
-            "pamac".into(),
-        ]
+        vec!["paru".into(), "yay".into(), "pikaur".into(), "trizen".into()]
     }
 }
 
