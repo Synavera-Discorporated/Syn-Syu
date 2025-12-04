@@ -59,16 +59,24 @@ they were enabled during manifest generation, and any discovered updates.
 | --- | --- |
 | `syn-syu core` | Regenerate the manifest using `synsyu_core`. |
 | `syn-syu sync` | Update all packages with available upgrades. |
+| `syn-syu plan` | Build an update plan JSON (no installs). |
 | `syn-syu aur` | Apply only AUR updates (repo upgrades skipped). |
 | `syn-syu repo` | Apply only repo updates. |
 | `syn-syu flatpak` | Apply Flatpak updates (or list when `--dry-run`). |
 | `syn-syu fwupd` | Apply firmware updates via fwupdmgr (or list when `--dry-run`). |
+| `syn-syu apps` | Run Flatpak and fwupd update flows together. |
 | `syn-syu update brave-bin` | Update selected packages. |
 | `syn-syu group development` | Update packages in a named group from `groups.toml`. |
 | `syn-syu inspect brave-bin` | Show manifest detail for a package. |
 | `syn-syu check` | Print manifest summary without applying changes. |
 | `syn-syu clean` | Prune caches/orphans according to policy. |
 | `syn-syu export` | Export repo/AUR package lists for replication. |
+| `syn-syu helpers` | List detected AUR helpers. |
+| `syn-syu helper <name>` | Set helper for this session (persist with helpers.sh). |
+| `syn-syu config` | Show config path info. |
+| `syn-syu groups-edit` | Open groups file in `$EDITOR`. |
+| `syn-syu log` | Show log directory/retention info. |
+| `syn-syu version` / `syn-syu help` | Version and usage. |
 
 Use `syn-syu --help` for the full flag list.
 
@@ -85,6 +93,8 @@ Use `syn-syu --help` for the full flag list.
   config or `10`.
 - `--with-flatpak` / `--with-fwupd` – opt into Flatpak and firmware updates
   during manifest generation and `sync` (also available as standalone commands).
+- `plan` flags: `--json`, `--strict`, `--offline`, `--no-aur`, `--no-repo`,
+  `--with-flatpak`, `--with-fwupd`, and `--plan/--manifest` path overrides.
 
 ### Safety & Maintenance Additions
 
@@ -156,6 +166,8 @@ mode = "warn"
 The `[applications]` section controls the default inclusion of Flatpak and
 firmware updates when building the manifest and during subsequent `sync`
 operations; CLI flags `--with-flatpak` and `--with-fwupd` override the defaults.
+Flatpak metadata is appended by the Bash layer after `synsyu_core` runs; the
+core binary itself only supports `--with-fwupd`.
 
 The `[space]` section defines `min_free_gb`, a buffer that must remain free on
 disk before updates proceed, and `mode`, which controls behaviour when the
@@ -228,6 +240,9 @@ modules, and optionally user data (config/logs):
 If you installed `synsyu_core` via `cargo install`, remove it with
 `cargo uninstall synsyu_core` or allow the uninstaller to delete the file in
 `~/.cargo/bin/`.
+
+For a formal description of Syn-Syu’s capabilities and safety guarantees, see
+`docs/synspek.yaml` (capabilities) and `docs/synspek_checks.yaml` (test charter).
 
 ## Roadmap Hooks
 

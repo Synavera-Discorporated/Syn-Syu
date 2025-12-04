@@ -1,0 +1,519 @@
+_meta:
+  etiquette: "Synavera Script Etiquette — YAML Profile v1.1"
+  project: "Syn-Syu"
+  document: "docs/synspek.yaml"
+  purpose: >
+    Capability specification for Syn-Syu CLI and synsyu_core binary, used for
+    auditing, tooling, and drift detection.
+  owner: "synavera_discorporated"
+  security_notes:
+    - "Informational reference only; no secrets or credentials."
+    - "Side-effect descriptions are declarative and not executable."
+  dependencies:
+    - "Bash orchestrator scripts under synsyu/lib"
+    - "Rust backend synsyu_core/*"
+  operational_scope: >
+    Consumed by tooling and reviewers to understand capabilities, gating, and
+    side-effects; not parsed at runtime by the product.
+  revision_history:
+    - "2025-12-05 COD  Created capability spec (v1)."
+    - "2025-12-05 COD  Added SSE-YAML _meta and structural normalization."
+  sse_principles_observed:
+    - "No secrets or PII."
+    - "Stable, documented structure with explicit provenance."
+    - "Human-readable with explicit mutability and network scope."
+version: 1
+tool: syn-syu
+entrypoints:
+  - id: cli-sync
+    name: sync
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_sync, line: 194}
+    inputs:
+      positional: []
+      options: ["--config", "--manifest", "--rebuild", "--plan", "--dry-run", "--no-aur", "--no-repo", "--helper", "--include", "--exclude", "--batch", "--min-free-gb", "--with-flatpak", "--with-fwupd", "--offline", "--verbose", "--json", "--confirm", "--noconfirm", "--quiet", "--strict", "--full-path", "--groups"]
+      config: ["[aur]", "[core]", "[helpers]", "[logging]", "[space]", "[safety]", "[applications]", "[snapshots]", "[clean]"]
+    outputs:
+      stdout: ["progress lines", "summary counts", "log path"]
+    side_effects:
+      system: ["pacman transactions", "AUR helper transactions", "snapshot commands", "pacnew checks"]
+      files: ["manifest.json (ensure/rebuild)", "logs/*.log", "logs/*.log.hash"]
+      network: ["Arch mirrors via pacman", "AUR helper traffic", "optional flatpak/fwupd remotes"]
+    gated_by:
+      config: ["[helpers].priority", "[safety].disk_check", "[space].min_free_gb", "[applications].flatpak", "[applications].fwupd", "[snapshots].enabled"]
+      cli: ["--no-aur", "--no-repo", "--offline", "--with-flatpak", "--with-fwupd", "--dry-run"]
+    operation: {mode: mutating, requires_root: true}
+    network_profile: {requires_network: true, targets: ["arch_mirrors", "aur_helper", "flatpak_remotes", "fwupd_channels"]}
+    invariants:
+      - id: sync_dry_run_no_installs
+        text: "sync MUST honor --dry-run to avoid installs."
+      - id: sync_disk_guard_enforced
+        text: "sync MUST abort when disk guard fails."
+      - id: sync_offline_skips_network
+        text: "sync in offline/no-aur/no-repo mode MUST avoid network-dependent commands."
+      - id: sync_min_free_cli_override
+        text: "sync MUST apply --min-free-gb overrides when higher than manifest/config."
+      - id: sync_snapshot_abort_on_failure
+        text: "sync MUST abort when pre-snapshot fails and require_success is set."
+      - id: sync_apps_flags_override_config
+        text: "sync MUST run app updates when --with-flatpak/--with-fwupd is passed even if config disables them."
+      - id: sync_manifest_app_section_updates
+        text: "sync MUST update manifest applications section when app flags are set."
+      - id: sync_log_prune_confined
+        text: "sync MUST prune logs only within the configured log directory."
+    notes:
+      - "Snapshot pre/post hooks can abort when require_success is set."
+
+  - id: cli-aur
+    name: aur
+    type: cli-subcommand
+    binary: syn-syu
+    source:
+      file: synsyu/lib/commands.sh
+      symbol: dispatch_command_aur
+      selector: aur
+      line: 85
+    inputs:
+      positional: []
+      options: ["--offline", "--dry-run", "--with-flatpak", "--with-fwupd"]
+    outputs: {stdout: ["same as sync"]}
+    side_effects:
+      system: ["AUR helper transactions only"]
+      files: ["manifest.json", "logs/*.log"]
+    gated_by: {cli: ["sets NO_REPO=1 before cmd_sync"]}
+    operation: {mode: mutating, requires_root: true}
+    network_profile: {requires_network: true, targets: ["aur_helper", "flatpak_remotes", "fwupd_channels"]}
+
+  - id: cli-repo
+    name: repo
+    type: cli-subcommand
+    binary: syn-syu
+    source:
+      file: synsyu/lib/commands.sh
+      symbol: dispatch_command_repo
+      selector: repo
+      line: 89
+    inputs:
+      positional: []
+      options: ["--offline", "--dry-run", "--with-flatpak", "--with-fwupd"]
+    outputs: {stdout: ["same as sync"]}
+    side_effects:
+      system: ["pacman transactions only"]
+      files: ["manifest.json", "logs/*.log"]
+    gated_by: {cli: ["sets NO_AUR=1 before cmd_sync"]}
+    operation: {mode: mutating, requires_root: true}
+    network_profile: {requires_network: true, targets: ["arch_mirrors", "flatpak_remotes", "fwupd_channels"]}
+
+  - id: cli-core
+    name: core
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_core, line: 157}
+    inputs:
+      positional: []
+      options: ["--manifest", "--config", "--no-aur", "--no-repo", "--offline", "--verbose", "--dry-run"]
+      config: ["[core].manifest_path"]
+    outputs: {stdout: ["synsyu_core output"]}
+    side_effects:
+      system: ["runs synsyu_core binary; no installs"]
+      files: ["manifest.json"]
+      network: ["AUR origin detection unless --offline"]
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: true, targets: ["aur_rpc"], note: "requires_network=false when --offline set"}
+
+  - id: cli-plan
+    name: plan
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/plan.sh, symbol: plan_generate_core, line: 12}
+    inputs:
+      positional: []
+      options: ["--manifest", "--plan", "--no-aur", "--no-repo", "--offline", "--with-flatpak", "--with-fwupd", "--strict", "--json", "--edit-plan"]
+      config: ["[core].manifest_path", "[space].min_free_gb"]
+    outputs: {stdout: ["synsyu_core plan summary or JSON"]}
+    side_effects:
+      system: ["invokes synsyu_core plan; no installs"]
+      files: ["plan.json", "logs/*.log"]
+      network: ["pacman/AUR/flatpak/fwupd queries unless disabled"]
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: true, targets: ["arch_mirrors", "aur_rpc", "flatpak_remotes", "fwupd_channels"], note: "requires_network=false when offline/no-aur/no-repo"}
+    invariants:
+      - id: plan_cli_no_mutation
+        text: "plan (via syn-syu) MUST NOT mutate system state."
+      - id: plan_cli_strict_errors_surface
+        text: "plan (via syn-syu) MUST honor --strict to surface errors."
+      - id: plan_cli_sources_follow_flags
+        text: "plan (via syn-syu) MUST respect no-aur/no-repo/offline/with-flatpak/with-fwupd flags in sources and counts."
+      - id: plan_cli_space_policy_enforced
+        text: "plan (via syn-syu) MUST mark blocked when space policy is enforce and available < min_free."
+
+  - id: cli-update
+    name: update
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_update, line: 377}
+    inputs:
+      positional: ["<packages...>"]
+      options: ["--dry-run", "--no-aur", "--no-repo", "--helper", "--include", "--exclude", "--with-flatpak", "--with-fwupd", "--offline"]
+    outputs: {stdout: ["per-package update lines", "summary counts"]}
+    side_effects:
+      system: ["pacman/helper installs for requested packages"]
+      files: ["manifest.json (rebuilt)", "logs/*.log"]
+      network: ["mirrors/AUR helper"]
+    operation: {mode: mutating, requires_root: true}
+    network_profile: {requires_network: true, targets: ["arch_mirrors", "aur_helper"]}
+    invariants:
+      - id: update_dry_run_no_installs
+        text: "update MUST not install when --dry-run is set."
+      - id: update_helper_flag_overrides
+        text: "update MUST honor --helper over detected/default helpers."
+
+  - id: cli-group
+    name: group
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_group, line: 426}
+    inputs:
+      positional: ["<group>"]
+      options: ["--groups <path>"]
+    outputs: {stdout: ["group selection", "per-package updates"]}
+    side_effects:
+      system: ["installs for grouped packages"]
+      files: ["logs/*.log"]
+      network: ["arch_mirrors", "aur_helper"]
+    operation: {mode: mutating, requires_root: true}
+    network_profile: {requires_network: true, targets: ["arch_mirrors", "aur_helper"]}
+
+  - id: cli-flatpak
+    name: flatpak
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_flatpak, line: 297}
+    inputs:
+      positional: []
+      options: ["--dry-run"]
+    outputs: {stdout: ["list or update output", "failed summary"]}
+    side_effects:
+      system: ["flatpak update invocations"]
+      network: ["flatpak remotes"]
+    operation: {mode: mutating, requires_root: false}
+    network_profile: {requires_network: true, targets: ["flatpak_remotes"]}
+    invariants:
+      - id: flatpak_fallback_noninteractive
+        text: "flatpak updates MUST fall back to interactive call when --noninteractive is unavailable."
+
+  - id: cli-fwupd
+    name: fwupd
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_fwupd, line: 305}
+    inputs:
+      positional: []
+      options: ["--dry-run"]
+    outputs: {stdout: ["fwupdmgr output", "failed summary"]}
+    side_effects:
+      system: ["fwupdmgr update"]
+      network: ["fwupd channels"]
+    operation: {mode: mutating, requires_root: false}
+    network_profile: {requires_network: true, targets: ["fwupd_channels"]}
+    invariants:
+      - id: fwupd_fallback_without_assume_yes
+        text: "fwupd updates MUST succeed even when --assume-yes is unavailable."
+
+  - id: cli-apps
+    name: apps
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_apps, line: 313}
+    inputs: {positional: [], options: []}
+    outputs: {stdout: ["flatpak/fwupd summaries"]}
+    side_effects:
+      system: ["flatpak and fwupd update runs"]
+      network: ["flatpak remotes", "fwupd channels"]
+    operation: {mode: mutating, requires_root: false}
+    network_profile: {requires_network: true, targets: ["flatpak_remotes", "fwupd_channels"]}
+
+  - id: cli-inspect
+    name: inspect
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_inspect, line: 517}
+    inputs:
+      positional: ["<package>"]
+      options: ["--json", "--full-path"]
+    outputs: {stdout: ["manifest entry detail (text or JSON)"]}
+    side_effects:
+      system: []
+      files: ["reads manifest.json"]
+      network: []
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: cli-check
+    name: check
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_check, line: 482}
+    inputs:
+      positional: []
+      options: ["--json", "--full-path"]
+    outputs: {stdout: ["manifest summary"]}
+    side_effects:
+      system: []
+      files: ["reads manifest.json"]
+      network: []
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: cli-clean
+    name: clean
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_clean, line: 548}
+    inputs:
+      positional: []
+      options: []
+      config: ["[clean] options", "[safety].disk_check"]
+    outputs: {stdout: ["cache/orphan removal logs"]}
+    side_effects:
+      system: ["paccache/pacman operations", "file deletions"]
+      files: []
+      network: []
+    operation: {mode: mutating, requires_root: true}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: cli-export
+    name: export
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_export, line: 583}
+    inputs:
+      positional: []
+      options: ["--json", "--plain"]
+    outputs: {stdout: ["package lists from manifest"]}
+    side_effects:
+      system: []
+      files: ["reads manifest.json"]
+      network: []
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: cli-helpers
+    name: helpers
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_helpers, line: 607}
+    inputs: {positional: [], options: []}
+    outputs: {stdout: ["detected helper list", "default helper"]}
+    side_effects:
+      system: []
+      files: []
+      network: []
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: cli-helper-set
+    name: helper
+    type: cli-subcommand
+    binary: syn-syu
+    source:
+      file: synsyu/lib/commands.sh
+      symbol: dispatch_command_helper
+      selector: helper
+      line: 99
+    inputs:
+      positional: ["<helper>"]
+      options: []
+    outputs: {stdout: ["session helper set message"]}
+    side_effects:
+      system: []
+      files: ["config.toml updated when using helpers.sh:update_helper_default"]
+      network: []
+    operation: {mode: mutating, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+    notes:
+
+      - "Persisted default uses python/tomli_w (helpers.sh update_helper_default)."
+
+  - id: cli-config
+    name: config
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_config, line: 622}
+    inputs:
+      positional: ["<path?>"]
+      options: []
+    outputs: {stdout: ["config path info"]}
+    side_effects:
+      system: []
+      files: []
+      network: []
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: cli-groups-edit
+    name: groups-edit
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_groups_edit, line: 640}
+    inputs: {positional: [], options: []}
+    outputs: {stdout: []}
+    side_effects:
+      system: []
+      files: ["opens groups.toml in EDITOR"]
+      network: []
+    operation: {mode: mutating, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: cli-log
+    name: log
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_log, line: 657}
+    inputs: {positional: [], options: []}
+    outputs: {stdout: ["log directory and retention info"]}
+    side_effects:
+      system: []
+      files: []
+      network: []
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: cli-version
+    name: version
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_version, line: 672}
+    inputs: {positional: [], options: []}
+    outputs: {stdout: ["version/build info (from synsyu_core --version)"]}
+    side_effects:
+      system: []
+      files: []
+      network: []
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: cli-help
+    name: help
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_help, line: 666}
+    inputs: {positional: [], options: []}
+    outputs: {stdout: ["usage text"]}
+    side_effects:
+      system: []
+      files: []
+      network: []
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
+
+  - id: bin-core
+    name: core
+    type: binary
+    binary: synsyu_core
+    source: {file: synsyu_core/src/main.rs, symbol: run_core, line: 124}
+    inputs:
+      positional: []
+      options: ["--config", "--manifest", "--log", "--package <PKG>", "--dry-run", "--verbose", "--offline", "--with-fwupd"]
+      config: ["[aur]", "[core]", "[helpers]", "[space]"]
+    outputs:
+      stdout: ["manifest summary"]
+      files: ["manifest.json", "logs when --log is provided"]
+    side_effects:
+      system: ["pacman -Qi/vercmp queries", "optional fwupdmgr get-devices"]
+      network: ["AUR origin detection unless --offline"]
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: true, targets: ["aur_rpc"], note: "requires_network=false when --offline"}
+    invariants:
+      - id: config_rejects_world_writable
+        text: "config loader MUST reject world-writable configuration files."
+
+  - id: bin-plan
+    name: plan
+    type: binary-subcommand
+    binary: synsyu_core
+    subcommand: plan
+    source:
+      file: synsyu_core/src/plan.rs
+      symbol: plan_command_execute
+      selector: plan
+      line: 122
+    inputs:
+      positional: []
+      options: ["--config", "--manifest", "--plan", "--json", "--strict", "--offline", "--no-repo", "--no-aur", "--with-flatpak", "--with-fwupd"]
+      config: ["[aur]", "[space] (min_free_gb/mode)", "[core].manifest_path"]
+    outputs:
+      stdout: ["plan summary or JSON"]
+      files: ["plan.json"]
+    side_effects:
+      system: ["pacman -Si/vercmp", "flatpak remote-ls", "fwupdmgr get-updates"]
+      network: ["mirrors", "AUR RPC", "flatpak remotes", "fwupd channels"]
+    gated_by:
+      config: ["[space].mode = enforce can block updates"]
+      cli: ["--offline skips AUR", "--no-aur", "--no-repo", "--with-flatpak", "--with-fwupd"]
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: true, targets: ["arch_mirrors", "aur_rpc", "flatpak_remotes", "fwupd_channels"], note: "requires_network=false when offline/no-aur/no-repo"}
+    invariants:
+      - id: plan_no_mutation
+        text: "plan MUST NOT mutate system state."
+      - id: plan_strict_errors_surface
+        text: "plan MUST record errors and respect --strict for exit code."
+      - id: plan_sources_follow_flags
+        text: "plan MUST honor no-aur/no-repo/offline/with-flatpak/with-fwupd flags."
+      - id: plan_space_policy_enforced
+        text: "plan MUST mark blocked when space policy is enforce and available < min_free."
+uncertainty_risks:
+  - description: pacman behaviour/version dependence (relies on -Qi/-Si/vercmp output fields and SHA-256 reporting; failures logged, updates skipped).
+    references:
+      - {file: synsyu_core/src/pacman.rs, symbol: enumerate_installed_packages, line: 35}
+      - {file: synsyu_core/src/plan.rs, symbol: collect_pacman_updates, line: 286}
+    notes: "Older pacman without SHA-256 Sum or differing field names reduces hashes/trust data; vercmp availability assumed."
+    severity: medium
+    impact: correctness
+  - description: flatpak noninteractive/assumeyes flags checked via --help; fallback runs without --noninteractive when missing.
+    references:
+      - {file: synsyu/lib/apps.sh, symbol: run_flatpak_updates, line: 18}
+      - {file: synsyu_core/src/plan.rs, symbol: collect_flatpak_updates, line: 362}
+    notes: "Behaviour varies with flatpak version; output parsing expects remote-ls columns."
+    severity: medium
+    impact: ux
+  - description: fwupdmgr flag variance; only adds --assume-yes when advertised, otherwise prompts.
+    references:
+      - {file: synsyu/lib/apps.sh, symbol: run_fwupd_updates, line: 65}
+      - {file: synsyu_core/src/plan.rs, symbol: collect_fwupd_updates, line: 410}
+    notes: "Firmware update flow depends on fwupd JSON schema and channel availability."
+    severity: medium
+    impact: correctness
+  - description: Snapshot hooks execute arbitrary shell via bash -c; capabilities broaden to whatever pre/post commands perform.
+    references:
+      - {file: synsyu/lib/commands.sh, symbol: run_snapshot, line: 51}
+    notes: "If require_success is set, failures abort sync (exit 420). External commands may perform privileged actions."
+    severity: high
+    impact: security
+  - description: Helper command execution delegated to detected AUR helper; behaviour depends on helper CLI semantics and version.
+    references:
+      - {file: synsyu/lib/helpers.sh, symbol: detect_helpers, line: 18}
+      - {file: synsyu/lib/commands.sh, symbol: execute_update, line: 321}
+    notes: "Flags limited to -S and --noconfirm; helper-specific prompts or side effects may differ."
+    severity: high
+    impact: security
+  - description: Dynamic config editing uses python/tomli_w; failure modes depend on python3/tomli_w availability.
+    references:
+      - {file: synsyu/lib/helpers.sh, symbol: update_helper_default, line: 43}
+      - {file: synsyu/lib/config.sh, symbol: load_config, line: 17}
+    notes: "Missing python modules cause silent fallback or exit; config write semantics match tomli_w."
+    severity: low
+    impact: correctness
+  - description: Log pruning uses python script to delete files under log directory; scope controlled by retention settings.
+    references:
+      - {file: synsyu/lib/logging.sh, symbol: log_prune, line: 70}
+    notes: "Deletes *.log and *.log.hash once size/age thresholds exceeded."
+    severity: low
+    impact: ux
+  - description: Flatpak manifest augmentation is appended post-core; depends on CLI flags and flatpak output parsing.
+    references:
+      - {file: synsyu/lib/manifest.sh, symbol: manifest_update_applications_section, line: 43}
+    notes: "Behaviour depends on flatpak CLI output and jq/python parsing."
+    severity: medium
+    impact: correctness

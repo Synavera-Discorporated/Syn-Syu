@@ -91,17 +91,35 @@ Common entry points (both `syn-syu` and `synsyu` work):
 ```bash
 synsyu            # Sync repo metadata, rebuild manifest, prompt for updates
 synsyu --dry-run  # Preview updates without making changes
+synsyu plan       # Build an update plan JSON (no installs)
 synsyu update <pkg>...
 synsyu group <name>
 synsyu clean
+synsyu aur        # AUR-only updates
+synsyu repo       # Repo-only updates
+synsyu apps       # Run flatpak + fwupd update flows together
 synsyu core --with-flatpak --with-fwupd  # record Flatpak/firmware intent in manifest
 synsyu flatpak    # Apply Flatpak updates (or dry-run list)
 synsyu fwupd      # Apply firmware updates via fwupdmgr
 synsyu sync --with-flatpak --with-fwupd  # include app/firmware updates in one sweep
+synsyu helpers    # List detected AUR helpers
+synsyu helper <name>  # Set helper for this session (or persist with helpers.sh)
+synsyu config     # Show config path info
+synsyu groups-edit  # Open groups.toml in $EDITOR
+synsyu log        # Show log directory/retention info
+synsyu version    # Show version/build info
+synsyu help       # Usage help
 ```
 
 Use `syn-syu --help` for the full command set, including manifest inspection,
 logging, and AUR-only or repo-only operations.
+
+The Rust binary is also available directly:
+
+```bash
+synsyu_core --manifest ~/.config/syn-syu/manifest.json --with-fwupd --offline
+synsyu_core plan --manifest ~/.config/syn-syu/manifest.json --plan ~/.config/syn-syu/plan.json --json --strict
+```
 
 ## Development
 
@@ -118,6 +136,9 @@ cargo build --release
 Bash code follows the Synavera Script Etiquette guidelines (see `docs/`).
 Contributions should include appropriate logging and remain shellchecked where
 possible.
+
+For a formal description of Syn-Syu’s capabilities and safety guarantees, see
+`docs/synspek.yaml` (capabilities) and `docs/synspek_checks.yaml` (test charter).
 
 ## License
 

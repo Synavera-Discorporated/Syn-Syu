@@ -62,7 +62,7 @@ use fwupd::collect_fwupd;
 #[command(
     name = "Syn-Syu-Core",
     version,
-    author = "Synavera Systems",
+    author = "synavera_discorporated",
     about = "Conscious manifest builder for Syn-Syu",
     subcommand_required = false,
     arg_required_else_help = false

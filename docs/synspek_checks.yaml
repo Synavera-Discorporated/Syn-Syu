@@ -1,0 +1,221 @@
+_meta:
+  etiquette: "Synavera Script Etiquette — YAML Profile v1.1"
+  project: "Syn-Syu"
+  document: "docs/synspek_checks.yaml"
+  purpose: >
+    Proposed automated checks mapped to Syn-Syu capabilities for regression,
+    security, and doc-drift detection.
+  owner: "synavera_discorporated"
+  security_notes:
+    - "Testing guidance only; no secrets or credentials."
+    - "CLI probes assume sandboxed/mocked binaries to avoid unintended installs."
+  dependencies:
+    - "synspek.yaml capability definitions"
+    - "Bash orchestrator synsyu/lib/*"
+    - "Rust backend synsyu_core/*"
+  operational_scope: >
+    Referenced by test authors or CI harnesses to design and tag checks; not
+    executed directly.
+  revision_history:
+    - "2025-12-05 COD  Authored initial check catalog."
+    - "2025-12-05 COD  Added SSE-YAML _meta and clarified scope."
+  sse_principles_observed:
+    - "No secrets or PII."
+    - "Explicit mapping from checks to source references."
+    - "Clear failure expectations and scoping to avoid side-effects."
+version: 1
+tool: syn-syu
+checks:
+  - id: offline_cli_no_side_effects
+    entrypoint_id: cli-sync
+    capability: sync_offline_skips_network
+    type: integration-cli
+    goal: Ensure offline/no-aur/no-repo/dry-run skips networked binaries.
+    method: "Put stub pacman/flatpak/fwupdmgr in PATH that fail if executed; run `syn-syu --offline --no-aur --no-repo --dry-run` with a dummy manifest; assert stubs are not called and exit code is 0."
+    references:
+      - file: synsyu/lib/commands.sh
+        symbol: cmd_sync
+        line: 194
+      - file: synsyu/lib/commands.sh
+        symbol: cmd_core
+        line: 157
+
+  - id: disk_guard_exit_enforce
+    entrypoint_id: cli-sync
+    capability: sync_disk_guard_enforced
+    type: integration-cli
+    goal: Fail sync when required bytes exceed available.
+    method: "Prepare manifest with metadata.min_free_bytes large and transient_size_total >0; set DISK_CHECK=1, MIN_FREE_SPACE_BYTES high; stub df to return small value; run `syn-syu sync --dry-run` and expect exit 421 with DISK error log."
+    references:
+      - file: synsyu/lib/disk.sh
+        symbol: check_disk_space
+        line: 31
+      - file: synsyu/lib/disk.sh
+        symbol: ensure_package_disk_space
+        line: 125
+
+  - id: disk_guard_cli_override
+    entrypoint_id: cli-sync
+    capability: sync_min_free_cli_override
+    type: integration-cli
+    goal: CLI --min-free-gb overrides manifest/config.
+    method: "Manifest sets metadata.min_free_bytes low; run `syn-syu sync --dry-run --min-free-gb 999` with DISK_CHECK=1 and stub df to return below required; expect exit 421 proving CLI override is used."
+    references:
+      - file: synsyu/lib/disk.sh
+        symbol: check_disk_space
+        line: 95
+
+  - id: snapshot_pre_abort
+    entrypoint_id: cli-sync
+    capability: sync_snapshot_abort_on_failure
+    type: integration-cli
+    goal: Pre-snapshot failure aborts when require_success is set.
+    method: "Set SNAPSHOTS_ENABLED=1 SNAPSHOT_PRE_CMD='false' SNAPSHOT_REQUIRE_SUCCESS=1; run `syn-syu sync --dry-run`; assert exit 420 and that a post-snapshot marker command is not executed."
+    references:
+      - file: synsyu/lib/commands.sh
+        symbol: run_snapshot
+        line: 51
+
+  - id: helper_precedence_override
+    entrypoint_id: cli-update
+    capability: update_helper_flag_overrides
+    type: integration-cli
+    goal: --helper flag wins over detected/configured helper.
+    method: "Place two stub helpers (paru,yay) in PATH; set config helpers.default=paru; run `syn-syu update foo --helper yay --dry-run`; assert only yay stub is invoked for AUR updates."
+    references:
+      - file: synsyu/lib/helpers.sh
+        symbol: detect_helpers
+        line: 18
+      - file: synsyu/lib/commands.sh
+        symbol: execute_update
+        line: 321
+
+  - id: applications_flag_invocation
+    entrypoint_id: cli-sync
+    capability: sync_apps_flags_override_config
+    type: integration-cli
+    goal: --with-flatpak/--with-fwupd trigger corresponding update commands even if config disables them.
+    method: "Config sets applications flatpak/fwupd=false; stub flatpak/fwupdmgr to record calls; run `syn-syu sync --with-flatpak --with-fwupd --dry-run`; assert stubs invoked once."
+    references:
+      - file: synsyu/lib/cli.sh
+        symbol: parse_cli
+        line: 70
+      - file: synsyu/lib/commands.sh
+        symbol: cmd_sync
+        line: 272
+
+  - id: plan_flag_gating
+    entrypoint_id: bin-plan
+    capability: plan_sources_follow_flags
+    type: integration-rust
+    goal: Flags remove corresponding sections/sources.
+    method: "Invoke PlanCommand::execute with a fixture manifest and flags `no_repo=true`, `with_flatpak=false`, `with_fwupd=false`, `offline=true`; assert plan_json counts for gated sections are 0 and sources list matches flags."
+    references:
+
+      - file: synsyu_core/src/plan.rs
+        symbol: PlanCommand::execute
+        line: 122
+
+  - id: plan_space_policy_enforce
+    entrypoint_id: bin-plan
+    capability: plan_space_policy_enforced
+    type: unit-rust
+    goal: enforce policy=Enforce when available < min_free.
+    method: "Mock space::assess_default_paths to return low available; set space_policy=Enforce; assert PlanOutput.blocked=true and metadata.space.status='low'."
+    references:
+
+      - file: synsyu_core/src/plan.rs
+        symbol: PlanCommand::execute
+        line: 200
+
+      - file: synsyu_core/src/space.rs
+        symbol: ensure_capacity
+        line: 75
+
+  - id: plan_strict_exit_nonzero
+    entrypoint_id: bin-plan
+    capability: plan_strict_errors_surface
+    type: integration-rust
+    goal: strict flag returns non-success when errors recorded.
+    method: "Use a manifest with an unknown package to force an error; run PlanCommand with strict=true and capture ExitCode != SUCCESS."
+    references:
+
+      - file: synsyu_core/src/main.rs
+        symbol: run_plan
+        line: 137
+
+      - file: synsyu_core/src/plan.rs
+        symbol: PlanCommand::execute
+        line: 122
+
+  - id: flatpak_noninteractive_fallback
+    entrypoint_id: cli-flatpak
+    capability: flatpak_fallback_noninteractive
+    type: integration-cli
+    goal: Fallback to interactive update when --noninteractive absent.
+    method: "Stub flatpak --help without --noninteractive; have update succeed only without that flag; run `syn-syu flatpak`; assert fallback call happens."
+    references:
+
+      - file: synsyu/lib/apps.sh
+        symbol: run_flatpak_updates
+        line: 18
+
+  - id: fwupd_assume_yes_optional
+    entrypoint_id: cli-fwupd
+    capability: fwupd_fallback_without_assume_yes
+    type: integration-cli
+    goal: Update succeeds when --assume-yes is unavailable.
+    method: "Stub fwupdmgr --help lacking --assume-yes and success only without it; run `syn-syu fwupd`; assert second call used."
+    references:
+
+      - file: synsyu/lib/apps.sh
+        symbol: run_fwupd_updates
+        line: 65
+
+  - id: logging_prune_scope
+    entrypoint_id: cli-sync
+    capability: sync_log_prune_confined
+    type: integration-cli
+    goal: Retention deletes logs and hashes only within log dir.
+    method: "Create temp log dir with multiple *.log and *.log.hash; set LOG_RETENTION_SIZE_MB small; run log_prune; assert oldest logs and hashes removed, others untouched."
+    references:
+
+      - file: synsyu/lib/logging.sh
+        symbol: log_prune
+        line: 70
+
+  - id: config_permissions_rejection
+    entrypoint_id: bin-core
+    capability: config_rejects_world_writable
+    type: unit-rust
+    goal: World-writable config rejected.
+    method: "Create temp config.toml with 0o666 perms; call SynsyuConfig::load_from_optional_path; expect Err(Config)."
+    references:
+
+      - file: synsyu_core/src/config.rs
+        symbol: SynsyuConfig::load_from_optional_path
+        line: 20
+
+  - id: manifest_app_section_update
+    entrypoint_id: cli-sync
+    capability: sync_manifest_app_section_updates
+    type: integration-cli
+    goal: manifest_update_applications_section reflects flatpak/fwupd flags.
+    method: "Seed manifest.json without applications; set APPLICATIONS_FLATPAK=1 APPLICATIONS_FWUPD=1 and stub flatpak list; call manifest_update_applications_section; assert applications block is populated accordingly."
+    references:
+
+      - file: synsyu/lib/manifest.sh
+        symbol: manifest_update_applications_section
+        line: 43
+
+  - id: update_dry_run_no_installs_check
+    entrypoint_id: cli-update
+    capability: update_dry_run_no_installs
+    type: integration-cli
+    goal: Ensure update obeys --dry-run with no installs.
+    method: "Stub pacman/helper to fail if run; execute `syn-syu update foo --dry-run` with a manifest marking foo upgradable; assert stubs not called and output indicates dry-run."
+    references:
+
+      - file: synsyu/lib/commands.sh
+        symbol: cmd_update
+        line: 377
