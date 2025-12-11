@@ -2,7 +2,10 @@ use std::env;
 use std::process::Command;
 
 fn main() {
-    emit_env("SYN_SYU_BUILD_SOURCE", env_value("SYN_SYU_BUILD_SOURCE").unwrap_or_else(|| "git".into()));
+    emit_env(
+        "SYN_SYU_BUILD_SOURCE",
+        env_value("SYN_SYU_BUILD_SOURCE").unwrap_or_else(|| "git".into()),
+    );
     emit_env(
         "SYN_SYU_GIT_COMMIT",
         env_value("SYN_SYU_GIT_COMMIT")

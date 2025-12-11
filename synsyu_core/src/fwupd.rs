@@ -89,9 +89,22 @@ pub struct FwupdState {
     pub enabled: bool,
     pub device_count: usize,
     pub devices: Vec<FwupdDevice>,
+    pub update_count: usize,
+    pub updates: Vec<FwupdUpdate>,
 }
 
-pub async fn collect_fwupd(logger: &Logger) -> Result<Option<FwupdState>> {
+#[derive(Debug, serde::Serialize, Clone)]
+pub struct FwupdUpdate {
+    pub device: String,
+    pub name: String,
+    pub installed: String,
+    pub available: String,
+    pub summary: String,
+    pub available_hash: String,
+    pub trust: String,
+}
+
+pub async fn collect_fwupd(logger: &Logger, include_updates: bool) -> Result<Option<FwupdState>> {
     let output = tokio::process::Command::new("fwupdmgr")
         .arg("get-devices")
         .arg("--json")
@@ -134,10 +147,7 @@ pub async fn collect_fwupd(logger: &Logger) -> Result<Option<FwupdState>> {
             .version
             .or(raw.version_bootloader)
             .unwrap_or_else(String::new);
-        let summary = raw
-            .summary
-            .or(raw.description)
-            .unwrap_or_else(String::new);
+        let summary = raw.summary.or(raw.description).unwrap_or_else(String::new);
 
         let checksum = truncate_hash(select_checksum(
             raw.checksum,
@@ -160,20 +170,154 @@ pub async fn collect_fwupd(logger: &Logger) -> Result<Option<FwupdState>> {
         });
     }
 
+    let mut updates = Vec::new();
+    if include_updates {
+        match collect_fwupd_updates().await {
+            Ok(list) => updates = list,
+            Err(err) => logger.warn("FWUPD", format!("fwupdmgr get-updates failed: {err}")),
+        }
+    }
+
     let state = FwupdState {
         enabled: true,
         device_count: devices.len(),
         devices,
+        update_count: updates.len(),
+        updates,
     };
     logger.info(
         "FWUPD",
         format!(
             "Recorded fwupd state: devices={} (releases across devices={})",
             state.device_count,
-            state.devices.iter().map(|d| d.releases.len()).sum::<usize>()
+            state
+                .devices
+                .iter()
+                .map(|d| d.releases.len())
+                .sum::<usize>()
         ),
     );
     Ok(Some(state))
+}
+
+pub async fn collect_fwupd_updates_for_plan() -> (Vec<FwupdUpdate>, Vec<String>) {
+    match collect_fwupd_updates().await {
+        Ok(list) => (list, Vec::new()),
+        Err(err) => (Vec::new(), vec![err]),
+    }
+}
+
+async fn collect_fwupd_updates() -> std::result::Result<Vec<FwupdUpdate>, String> {
+    let output = tokio::process::Command::new("fwupdmgr")
+        .args(["get-updates", "--json"])
+        .output()
+        .await
+        .map_err(|_| "failed to spawn fwupdmgr".to_string())?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+
+    let parsed: FwupdUpdates =
+        serde_json::from_slice(&output.stdout).map_err(|err| format!("parse failed {err}"))?;
+
+    let devices = if !parsed.devices.is_empty() {
+        parsed.devices
+    } else {
+        parsed.devices_lower
+    };
+
+    let mut updates = Vec::new();
+    for dev in devices {
+        let dev_id = dev
+            .device_id
+            .or(dev.id)
+            .unwrap_or_else(|| "unknown".to_string());
+        let name = dev.name.clone().unwrap_or_else(|| dev_id.clone());
+        let installed = dev.installed.unwrap_or_default();
+        let releases = dev.releases.or(dev.releases_lower).unwrap_or_default();
+        for rel in releases {
+            let available = rel.version.unwrap_or_default();
+            if available.is_empty() || (!installed.is_empty() && installed == available) {
+                continue;
+            }
+            let summary = rel.summary.or(rel.description).unwrap_or_default();
+            let checksum = truncate_hash(select_checksum(
+                rel.checksum,
+                rel.checksums,
+                rel.checksums_lower,
+            ));
+            let trust = join_trust(rel.trust_flags, rel.trust_flags_lower)
+                .or_else(|| {
+                    rel.signed.map(|s| {
+                        if s {
+                            "signed".to_string()
+                        } else {
+                            "unsigned".to_string()
+                        }
+                    })
+                })
+                .unwrap_or_default();
+
+            updates.push(FwupdUpdate {
+                device: dev_id.clone(),
+                name: name.clone(),
+                installed: installed.clone(),
+                available,
+                summary,
+                available_hash: checksum,
+                trust,
+            });
+        }
+    }
+
+    Ok(updates)
+}
+
+#[derive(Debug, Deserialize)]
+struct FwupdUpdates {
+    #[serde(rename = "Devices", default)]
+    devices: Vec<FwupdUpdateDevice>,
+    #[serde(default)]
+    devices_lower: Vec<FwupdUpdateDevice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FwupdUpdateDevice {
+    #[serde(rename = "DeviceId")]
+    device_id: Option<String>,
+    #[serde(rename = "Id")]
+    id: Option<String>,
+    #[serde(rename = "Name")]
+    name: Option<String>,
+    #[serde(rename = "Version")]
+    installed: Option<String>,
+    #[serde(rename = "Releases")]
+    releases: Option<Vec<FwupdUpdateRelease>>,
+    #[serde(rename = "releases")]
+    releases_lower: Option<Vec<FwupdUpdateRelease>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FwupdUpdateRelease {
+    #[serde(rename = "Version")]
+    version: Option<String>,
+    #[serde(rename = "Summary")]
+    summary: Option<String>,
+    #[serde(rename = "Description")]
+    description: Option<String>,
+    #[serde(rename = "Checksum")]
+    checksum: Option<String>,
+    #[serde(rename = "Checksums")]
+    checksums: Option<Vec<String>>,
+    #[serde(rename = "checksums")]
+    checksums_lower: Option<Vec<String>>,
+    #[serde(rename = "TrustFlags")]
+    trust_flags: Option<Vec<String>>,
+    #[serde(rename = "trust-flags")]
+    trust_flags_lower: Option<Vec<String>>,
+    #[serde(rename = "Signed")]
+    signed: Option<bool>,
 }
 
 fn select_checksum(

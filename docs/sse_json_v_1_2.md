@@ -1,11 +1,21 @@
 <!--
-Synavera Script Etiquette — JSON Profile v1.1
-Derived from SSE v1.1
-Author: CMD Draven
-Scope: Static JSON used for configuration, contracts, schemas, fixtures, and API payloads under Synavera standards.
+Title: Synavera Script Etiquette — JSON Profile
+Version: 1.2
+Status: Stable
+SSE Profile: JSON Profile v1.2; Markdown & Documentation v1.2; Universal SSE v1.2
+Audience: Synavera developers, maintainers, security auditors, and tooling authors working with JSON
+Scope: Static JSON for configuration, contracts, schemas, fixtures, and policy under Synavera standards.
+Last Reviewed: 2025-12-09T00:00:00Z
+Security / Safety: Non-compliant JSON may cause schema drift, misconfiguration, policy violations, or unsafe defaults in Synavera systems.
+Migration Note: This JSON profile has been elevated to v1.2 by aligning document structure and metadata with SSE-Markdown v1.2 and Universal SSE v1.2; JSON authored against v1.1 remains valid but should be re-audited against this version.
+Linked Artifacts:
+  - Universal SSE: v1.2
+  - SSE-Markdown & Documentation Profile: v1.2
+  - SSE-YAML: v1.2
+  - Language Profiles: SSE-{Bash,C Core,C Secure,C++,Integrated Control,Java,Kotlin,Python,Rust} v1.2
 -->
 
-# Synavera Script Etiquette — JSON Profile v1.1
+# Synavera Script Etiquette — JSON Profile v1.2
 
 JSON under Synavera is not “just a blob of keys and values.”
 Every document is an interface, a contract, and often a policy surface.
@@ -186,7 +196,7 @@ This block lives at the top level and provides machine-readable context.
 ```json
 {
   "_meta": {
-    "etiquette": "Synavera Script Etiquette — JSON Profile v1.1",
+    "etiquette": "Synavera Script Etiquette — JSON Profile v1.2",
     "project": "PROJECT OR MODULE NAME",
     "document": "relative/path/to/file.json",
     "purpose": "Short narrative of what this JSON controls or represents.",
@@ -263,4 +273,4 @@ Any JSON artifact that claims to be “Synavera-compliant” must:
 Opaque, unaudited JSON that hides behaviour, policy, or user-impacting decisions has no place under the Synavera name.
 
 #============================================================
-*End of Synavera Script Etiquette — JSON Profile v1.1*
+*End of Synavera Script Etiquette — JSON Profile v1.2*

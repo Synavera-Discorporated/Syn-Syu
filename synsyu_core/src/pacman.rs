@@ -198,6 +198,81 @@ pub async fn query_repo_versions(packages: &[String]) -> Result<HashMap<String, 
     Ok(versions)
 }
 
+/// Retrieve version and size info for the specified packages via an AUR helper (paru/yay/etc.).
+pub async fn query_aur_helper_versions(
+    helper: &str,
+    packages: &[String],
+) -> Result<HashMap<String, VersionInfo>> {
+    let mut versions = HashMap::new();
+    if packages.is_empty() {
+        return Ok(versions);
+    }
+
+    const CHUNK_SIZE: usize = 32;
+    for chunk in packages.chunks(CHUNK_SIZE) {
+        let output = Command::new(helper)
+            .arg("-Si")
+            .args(chunk)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|err| map_spawn_error(err, helper))?;
+
+        if !output.status.success() {
+            return Err(SynsyuError::CommandFailure {
+                command: format!("{helper} -Si {}", chunk.join(" ")),
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            });
+        }
+
+        let stdout = String::from_utf8(output.stdout).map_err(|err| {
+            SynsyuError::Serialization(format!("{helper} -Si emitted invalid UTF-8: {err}"))
+        })?;
+
+        let mut current: Option<String> = None;
+        let mut current_version: Option<String> = None;
+        let mut download_size: Option<u64> = None;
+        let mut installed_size: Option<u64> = None;
+        for line in stdout.lines() {
+            if let Some((raw_key, raw_value)) = line.split_once(':') {
+                let key = raw_key.trim();
+                let value = raw_value.trim();
+                match key {
+                    "Name" => {
+                        current = Some(value.to_string());
+                        current_version = None;
+                        download_size = None;
+                        installed_size = None;
+                    }
+                    "Version" => {
+                        current_version = Some(value.to_string());
+                    }
+                    "Download Size" => {
+                        download_size = parse_pacman_size(value);
+                    }
+                    "Installed Size" => {
+                        installed_size = parse_pacman_size(value);
+                    }
+                    _ => {}
+                }
+            } else if line.trim().is_empty() {
+                if let (Some(name), Some(ver)) = (current.take(), current_version.take()) {
+                    versions.insert(name, VersionInfo::new(ver, download_size, installed_size));
+                }
+                download_size = None;
+                installed_size = None;
+            }
+        }
+        if let (Some(name), Some(ver)) = (current.take(), current_version.take()) {
+            versions.insert(name, VersionInfo::new(ver, download_size, installed_size));
+        }
+    }
+
+    Ok(versions)
+}
+
 /// Compare two package versions using `vercmp`.
 pub async fn compare_versions(local: &str, remote: &str) -> Result<std::cmp::Ordering> {
     let output = Command::new("vercmp")
@@ -308,7 +383,7 @@ struct AurEntry {
     name: Option<String>,
 }
 
-fn parse_pacman_size(value: &str) -> Option<u64> {
+pub fn parse_pacman_size(value: &str) -> Option<u64> {
     let mut parts = value.trim().split_whitespace();
     let number = parts.next()?.replace(',', "");
     let unit = parts.next().unwrap_or("B");

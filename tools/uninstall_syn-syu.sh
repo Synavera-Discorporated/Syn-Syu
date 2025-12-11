@@ -214,6 +214,60 @@ $parsed
 EOF
 }
 
+#--- detect_from_install_log
+detect_from_install_log() {
+  local install_logs_dir="$HOME/.local/share/syn-syu/install"
+  local latest
+  latest="$(ls -1t "$install_logs_dir"/installer_*.log 2>/dev/null | head -n1 || true)"
+  [ -n "$latest" ] || return 0
+
+  # Try to read dest paths from installer run commands.
+  local core_path syn_path lib_path
+  core_path="$(grep -E 'synsyu_core/target/.*/synsyu_core' "$latest" | awk '{print $NF}' | tail -n1)"
+  syn_path="$(grep -E '/synsyu/syn-syu' "$latest" | awk '{print $NF}' | tail -n1)"
+  lib_path="$(grep -E '/synsyu/lib/logging.sh' "$latest" | awk '{print $NF}' | xargs dirname | tail -n1)"
+
+  if [ -z "$core_path" ]; then
+    core_path="$(grep -E 'synsyu_core\s+->' "$latest" | awk '{print $3}' | tail -n1)"
+  fi
+  if [ -z "$syn_path" ]; then
+    syn_path="$(grep -E 'syn-syu\s+->' "$latest" | awk '{print $3}' | tail -n1)"
+  fi
+  if [ -z "$lib_path" ]; then
+    lib_path="$(grep -E 'library dir' "$latest" | awk '{print $4}' | tail -n1)"
+  fi
+
+  if [ -z "$BIN_CORE" ] && [ -n "$core_path" ]; then
+    BIN_CORE="$core_path"
+  fi
+  if [ -z "$BIN_SYNSYU" ] && [ -n "$syn_path" ]; then
+    BIN_SYNSYU="$syn_path"
+  fi
+  if [ -n "$lib_path" ]; then
+    LIB_DIRS=("$lib_path" "${LIB_DIRS[@]}")
+  fi
+}
+
+#--- detect_from_prompt
+detect_from_prompt() {
+  if [ -n "$BIN_CORE" ] || [ -n "$BIN_SYNSYU" ] || [ "${#LIB_DIRS[@]}" -gt 0 ]; then
+    return 0
+  fi
+  if [ "$DRY_RUN" = "1" ]; then
+    return 0
+  fi
+  printf '\nCustom install not detected automatically.\n'
+  local prefix
+  prefix="$(prompt_default 'Enter install prefix (blank to skip)' '')"
+  if [ -z "$prefix" ]; then
+    return 0
+  fi
+  prefix="$(expand_path_simple "$prefix")"
+  BIN_SYNSYU="$prefix/bin/syn-syu"
+  BIN_CORE="$prefix/bin/synsyu_core"
+  LIB_DIRS=("$prefix/share/syn-syu" "${LIB_DIRS[@]}")
+}
+
 #--- rm_path
 rm_path() {
   local target="$1"
@@ -262,6 +316,9 @@ detect_targets() {
   if [ -n "$CONFIG_OVERRIDE_LOG_DIR" ]; then
     CUSTOM_LOG_DIR="$CONFIG_OVERRIDE_LOG_DIR"
   fi
+
+  detect_from_install_log
+  detect_from_prompt
 }
 
 #--- detect_package_owner

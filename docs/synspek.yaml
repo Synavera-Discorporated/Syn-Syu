@@ -501,8 +501,23 @@ uncertainty_risks:
   - description: Dynamic config editing uses python/tomli_w; failure modes depend on python3/tomli_w availability.
     references:
       - {file: synsyu/lib/helpers.sh, symbol: update_helper_default, line: 43}
+    notes: "Used only for helper default writes; config parsing itself is handled in Rust."
+    severity: low
+    impact: correctness
+  - description: Config parsing is performed by synsyu_core; syn-syu relies on `synsyu_core config --json` output.
+    references:
+      - {file: synsyu_core/src/main.rs, symbol: run_config, line: 350}
+      - {file: synsyu_core/src/config.rs, symbol: SynsyuConfig, line: 20}
       - {file: synsyu/lib/config.sh, symbol: load_config, line: 17}
-    notes: "Missing python modules cause silent fallback or exit; config write semantics match tomli_w."
+    notes: "If synsyu_core is missing or emits invalid JSON, config load fails; jq remains required to parse the JSON."
+    severity: low
+    impact: correctness
+  - description: Logging retention and hashing use synsyu_core `logs` subcommand; Bash delegates init/emit/hash/prune to core.
+    references:
+      - {file: synsyu_core/src/log_api.rs, symbol: log_prune, line: 55}
+      - {file: synsyu_core/src/main.rs, symbol: run_logs, line: 390}
+      - {file: synsyu/lib/logging.sh, symbol: log_init, line: 25}
+    notes: "If synsyu_core is unavailable, Bash falls back to basic logging without pruning."
     severity: low
     impact: correctness
   - description: Log pruning uses python script to delete files under log directory; scope controlled by retention settings.
@@ -511,9 +526,11 @@ uncertainty_risks:
     notes: "Deletes *.log and *.log.hash once size/age thresholds exceeded."
     severity: low
     impact: ux
-  - description: Flatpak manifest augmentation is appended post-core; depends on CLI flags and flatpak output parsing.
+  - description: Application metadata (flatpak/fwupd) is captured inside synsyu_core when enabled; presence depends on CLI/config flags and tool output.
     references:
-      - {file: synsyu/lib/manifest.sh, symbol: manifest_update_applications_section, line: 43}
-    notes: "Behaviour depends on flatpak CLI output and jq/python parsing."
+      - {file: synsyu_core/src/main.rs, symbol: run_core, line: 292}
+      - {file: synsyu_core/src/flatpak.rs, symbol: collect_flatpak, line: 15}
+      - {file: synsyu_core/src/fwupd.rs, symbol: collect_fwupd, line: 107}
+    notes: "If flatpak/fwupdmgr are unavailable or flags are off, manifests omit application sections; plan falls back to probing when manifest lacks data."
     severity: medium
     impact: correctness

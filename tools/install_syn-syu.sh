@@ -339,6 +339,39 @@ configure_guided() {
   SUDO_CMD="sudo"
   INSTALL_DEPS=1
   log_info "MODE" "Guided setup selected."
+
+  printf '\nDefault install locations:\n'
+  printf '  Prefix : %s\n' "$INSTALL_PREFIX"
+  printf '  Bin    : %s\n' "$BIN_DIR"
+  printf '  Lib    : %s\n' "$LIB_DIR"
+  printf '  Config : %s\n' "$CONFIG_DIR"
+  printf '  Groups : %s\n' "$GROUPS_FILE"
+  printf '  Sudo   : %s\n' "${CLI_NO_SUDO:+disabled}"
+
+  if ! prompt_yes_no "Use these defaults?" "Y"; then
+    printf '\nOverride install locations (leave blank to accept shown default):\n'
+    INSTALL_PREFIX="$(prompt_default 'Install prefix' "$INSTALL_PREFIX")"
+    INSTALL_PREFIX="$(expand_path "$INSTALL_PREFIX")"
+    BIN_DIR="$(prompt_default "Binary directory" "${INSTALL_PREFIX}/bin")"
+    BIN_DIR="$(expand_path "$BIN_DIR")"
+    LIB_DIR="$(prompt_default "Library directory (for .sh modules)" "${INSTALL_PREFIX}/share/syn-syu")"
+    LIB_DIR="$(expand_path "$LIB_DIR")"
+    CONFIG_DIR="$(prompt_default "Config directory" "$CONFIG_DIR")"
+    CONFIG_DIR="$(expand_path "$CONFIG_DIR")"
+    GROUPS_FILE="$(prompt_default "Groups file path" "$GROUPS_FILE")"
+    GROUPS_FILE="$(expand_path "$GROUPS_FILE")"
+  fi
+
+  printf '\nUsing:\n'
+  printf '  Prefix : %s\n' "$INSTALL_PREFIX"
+  printf '  Bin    : %s\n' "$BIN_DIR"
+  printf '  Lib    : %s\n' "$LIB_DIR"
+  printf '  Config : %s\n' "$CONFIG_DIR"
+  printf '  Groups : %s\n' "$GROUPS_FILE"
+
+  if [ "$CLI_NO_SUDO" = "1" ]; then
+    SUDO_CMD=""
+  fi
 }
 
 #--- configure_advanced

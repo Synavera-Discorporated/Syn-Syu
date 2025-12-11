@@ -73,6 +73,22 @@ pub fn assess_default_paths() -> Result<SpaceReport> {
     report.ok_or_else(|| SynsyuError::Runtime("Unable to determine available disk space".into()))
 }
 
+/// Determine available bytes for a specific path (or its closest existing parent).
+pub fn assess_path(target: &Path) -> Result<SpaceReport> {
+    if let Some(existing) = ensure_existing(target) {
+        let bytes = free_bytes(existing)?;
+        Ok(SpaceReport {
+            checked_path: existing.to_path_buf(),
+            available_bytes: bytes,
+        })
+    } else {
+        Err(SynsyuError::Runtime(format!(
+            "Unable to assess space for {}",
+            target.display()
+        )))
+    }
+}
+
 /// Format bytes into a concise human-readable string (IEC units).
 pub fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];

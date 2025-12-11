@@ -31,7 +31,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use dirs::config_dir;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, SynsyuError};
 
@@ -46,6 +46,16 @@ pub struct SynsyuConfig {
     pub helpers: HelperConfig,
     #[serde(default)]
     pub space: SpaceConfig,
+    #[serde(default)]
+    pub applications: ApplicationsConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
+    #[serde(default)]
+    pub snapshots: SnapshotsConfig,
+    #[serde(default)]
+    pub safety: SafetyConfig,
+    #[serde(default)]
+    pub clean: CleanConfig,
 }
 
 impl SynsyuConfig {
@@ -100,6 +110,11 @@ impl SynsyuConfig {
         self.core = other.core;
         self.helpers = other.helpers;
         self.space = other.space;
+        self.applications = other.applications;
+        self.logging = other.logging;
+        self.snapshots = other.snapshots;
+        self.safety = other.safety;
+        self.clean = other.clean;
     }
 
     /// Manifest path resolved from configuration.
@@ -131,6 +146,43 @@ impl SynsyuConfig {
     pub fn space_policy(&self) -> SpacePolicy {
         self.space.policy
     }
+
+    /// Whether flatpak application metadata should be collected by default.
+    pub fn flatpak_enabled(&self) -> bool {
+        self.applications.flatpak
+    }
+
+    /// Whether fwupd firmware metadata should be collected by default.
+    pub fn fwupd_enabled(&self) -> bool {
+        self.applications.fwupd
+    }
+
+    /// Snapshot of merged configuration suitable for reporting.
+    pub fn to_report(&self) -> ConfigReport {
+        ConfigReport {
+            manifest_path: self.manifest_path(),
+            log_directory: self.log_dir(),
+            helper_priority: self.helpers.priority.clone(),
+            helper_default: self.helpers.default.clone(),
+            space_min_free_bytes: self.space.min_free_bytes(),
+            space_policy: self.space.policy.to_string(),
+            batch_size: self.core.batch_size,
+            applications_flatpak: self.applications.flatpak,
+            applications_fwupd: self.applications.fwupd,
+            log_level: self.logging.level.clone(),
+            log_retention_days: self.logging.retention_days,
+            log_retention_megabytes: self.logging.retention_megabytes,
+            snapshots_enabled: self.snapshots.enabled,
+            snapshot_pre_command: self.snapshots.pre_command.clone(),
+            snapshot_post_command: self.snapshots.post_command.clone(),
+            snapshot_require_success: self.snapshots.require_success,
+            safety_disk_check: self.safety.disk_check,
+            safety_disk_margin_mb: self.safety.disk_extra_margin_mb,
+            clean_keep_versions: self.clean.keep_versions,
+            clean_remove_orphans: self.clean.remove_orphans,
+            clean_check_pacnew: self.clean.check_pacnew,
+        }
+    }
 }
 
 impl Default for SynsyuConfig {
@@ -140,6 +192,11 @@ impl Default for SynsyuConfig {
             core: CoreConfig::default(),
             helpers: HelperConfig::default(),
             space: SpaceConfig::default(),
+            applications: ApplicationsConfig::default(),
+            logging: LoggingConfig::default(),
+            snapshots: SnapshotsConfig::default(),
+            safety: SafetyConfig::default(),
+            clean: CleanConfig::default(),
         }
     }
 }
@@ -198,8 +255,7 @@ pub struct CoreConfig {
 impl CoreConfig {
     fn default_manifest_path() -> String {
         let base = config_dir().unwrap_or_else(|| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
-                .join(".config")
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
         });
         base.join("syn-syu")
             .join("manifest.json")
@@ -280,11 +336,18 @@ pub struct HelperConfig {
     #[serde(default = "HelperConfig::default_priority")]
     #[allow(dead_code)]
     pub priority: Vec<String>,
+    #[serde(default)]
+    pub default: Option<String>,
 }
 
 impl HelperConfig {
     fn default_priority() -> Vec<String> {
-        vec!["paru".into(), "yay".into(), "pikaur".into(), "trizen".into()]
+        vec![
+            "paru".into(),
+            "yay".into(),
+            "pikaur".into(),
+            "trizen".into(),
+        ]
     }
 }
 
@@ -292,8 +355,155 @@ impl Default for HelperConfig {
     fn default() -> Self {
         Self {
             priority: Self::default_priority(),
+            default: None,
         }
     }
+}
+
+/// Application metadata collection toggles.
+#[derive(Debug, Deserialize, Clone)]
+pub struct ApplicationsConfig {
+    #[serde(default)]
+    pub flatpak: bool,
+    #[serde(default)]
+    pub fwupd: bool,
+}
+
+impl Default for ApplicationsConfig {
+    fn default() -> Self {
+        Self {
+            flatpak: false,
+            fwupd: false,
+        }
+    }
+}
+
+/// Logging preferences.
+#[derive(Debug, Deserialize, Clone)]
+pub struct LoggingConfig {
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub retention_days: Option<u64>,
+    #[serde(default)]
+    pub retention_megabytes: Option<u64>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            directory: None,
+            level: Some("info".to_string()),
+            retention_days: None,
+            retention_megabytes: None,
+        }
+    }
+}
+
+/// Snapshot hooks configuration.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SnapshotsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub pre_command: Option<String>,
+    #[serde(default)]
+    pub post_command: Option<String>,
+    #[serde(default)]
+    pub require_success: bool,
+}
+
+impl Default for SnapshotsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            pre_command: None,
+            post_command: None,
+            require_success: false,
+        }
+    }
+}
+
+/// Safety tuning.
+#[derive(Debug, Deserialize, Clone)]
+pub struct SafetyConfig {
+    #[serde(default = "SafetyConfig::default_disk_check")]
+    pub disk_check: bool,
+    #[serde(default)]
+    pub disk_extra_margin_mb: u64,
+}
+
+impl SafetyConfig {
+    fn default_disk_check() -> bool {
+        true
+    }
+}
+
+impl Default for SafetyConfig {
+    fn default() -> Self {
+        Self {
+            disk_check: Self::default_disk_check(),
+            disk_extra_margin_mb: 0,
+        }
+    }
+}
+
+/// Cache/cleanup preferences.
+#[derive(Debug, Deserialize, Clone)]
+pub struct CleanConfig {
+    #[serde(default = "CleanConfig::default_keep_versions")]
+    pub keep_versions: u64,
+    #[serde(default)]
+    pub remove_orphans: bool,
+    #[serde(default = "CleanConfig::default_check_pacnew")]
+    pub check_pacnew: bool,
+}
+
+impl CleanConfig {
+    fn default_keep_versions() -> u64 {
+        2
+    }
+    fn default_check_pacnew() -> bool {
+        true
+    }
+}
+
+impl Default for CleanConfig {
+    fn default() -> Self {
+        Self {
+            keep_versions: Self::default_keep_versions(),
+            remove_orphans: false,
+            check_pacnew: Self::default_check_pacnew(),
+        }
+    }
+}
+
+/// Serializable configuration summary.
+#[derive(Debug, Serialize, Clone)]
+pub struct ConfigReport {
+    pub manifest_path: PathBuf,
+    pub log_directory: PathBuf,
+    pub helper_priority: Vec<String>,
+    pub helper_default: Option<String>,
+    pub space_min_free_bytes: u64,
+    pub space_policy: String,
+    pub batch_size: usize,
+    pub applications_flatpak: bool,
+    pub applications_fwupd: bool,
+    pub log_level: Option<String>,
+    pub log_retention_days: Option<u64>,
+    pub log_retention_megabytes: Option<u64>,
+    pub snapshots_enabled: bool,
+    pub snapshot_pre_command: Option<String>,
+    pub snapshot_post_command: Option<String>,
+    pub snapshot_require_success: bool,
+    pub safety_disk_check: bool,
+    pub safety_disk_margin_mb: u64,
+    pub clean_keep_versions: u64,
+    pub clean_remove_orphans: bool,
+    pub clean_check_pacnew: bool,
 }
 
 fn default_config_path() -> Option<PathBuf> {

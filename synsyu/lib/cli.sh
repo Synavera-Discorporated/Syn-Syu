@@ -172,6 +172,18 @@ parse_cli() {
   fi
 }
 
+#--- enforce_offline_mode
+# Ensure offline flag disables all network-dependent paths.
+enforce_offline_mode() {
+  if [ "${OFFLINE:-0}" != "1" ]; then
+    return 0
+  fi
+  NO_AUR=1
+  NO_REPO=1
+  APPLICATIONS_FLATPAK=0
+  APPLICATIONS_FWUPD=0
+}
+
 #--- parse_post_command_flags
 # Allow common flags to appear after the command name.
 parse_post_command_flags() {

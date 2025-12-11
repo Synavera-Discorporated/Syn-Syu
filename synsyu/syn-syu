@@ -163,8 +163,9 @@ main() {
   parse_cli "$@"
   parse_post_command_flags "$@"
   load_config
+  enforce_offline_mode
   log_init
-  if [ "$NO_AUR" = "1" ] && [ "$NO_REPO" = "1" ]; then
+  if [ "$NO_AUR" = "1" ] && [ "$NO_REPO" = "1" ] && [ "${OFFLINE:-0}" != "1" ]; then
     log_error "E103" "Cannot disable both repo and AUR operations"
     exit 103
   fi

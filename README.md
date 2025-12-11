@@ -61,7 +61,10 @@ and copy binaries and libraries into a prefix you choose. An accompanying
 ## Configuration
 
 Syn-Syu looks for configuration at `~/.config/syn-syu/config.toml`. An example
-file is provided at `examples/config.toml`. Key options include:
+file is provided at `examples/config.toml`. You can view the merged
+configuration (defaults + file) via `synsyu config --show [--json]
+synsyu logs --prune # apply retention policy via synsyu_core`. Key
+options include:
 
 - `core.manifest_path` – output path for the generated manifest.
 - `space.min_free_gb` – reserved buffer that must remain free after updates.

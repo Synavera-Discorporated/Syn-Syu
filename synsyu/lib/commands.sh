@@ -195,6 +195,13 @@ cmd_core() {
 cmd_sync() {
   FAILED_UPDATES=()
   manifest_require
+  if [ "${OFFLINE:-0}" = "1" ]; then
+    log_info "OFFLINE" "Offline mode: skipping sync (repo/AUR/flatpak/fwupd disabled)"
+    if [ "${QUIET:-0}" != "1" ]; then
+      printf -- 'Offline mode active: skipping networked sync operations.\n'
+    fi
+    return 0
+  fi
   log_info "SYNC" "Commencing orchestrated upgrade"
   run_snapshot "pre"
   check_disk_space
@@ -297,6 +304,13 @@ cmd_sync() {
 #--- cmd_flatpak
 cmd_flatpak() {
   FAILED_UPDATES=()
+  if [ "${OFFLINE:-0}" = "1" ]; then
+    log_info "OFFLINE" "Offline mode: skipping flatpak updates"
+    if [ "${QUIET:-0}" != "1" ]; then
+      printf -- 'Offline mode active: skipping flatpak updates.\n'
+    fi
+    return 0
+  fi
   log_info "FLATPAK" "Flatpak update command triggered"
   run_flatpak_updates || true
   print_failed_update_summary
@@ -305,6 +319,13 @@ cmd_flatpak() {
 #--- cmd_fwupd
 cmd_fwupd() {
   FAILED_UPDATES=()
+  if [ "${OFFLINE:-0}" = "1" ]; then
+    log_info "OFFLINE" "Offline mode: skipping fwupd updates"
+    if [ "${QUIET:-0}" != "1" ]; then
+      printf -- 'Offline mode active: skipping firmware updates.\n'
+    fi
+    return 0
+  fi
   log_info "FWUPD" "Firmware update command triggered"
   run_fwupd_updates || true
   print_failed_update_summary
@@ -313,6 +334,13 @@ cmd_fwupd() {
 #--- cmd_apps
 cmd_apps() {
   FAILED_UPDATES=()
+  if [ "${OFFLINE:-0}" = "1" ]; then
+    log_info "OFFLINE" "Offline mode: skipping application updates"
+    if [ "${QUIET:-0}" != "1" ]; then
+      printf -- 'Offline mode active: skipping flatpak/fwupd updates.\n'
+    fi
+    return 0
+  fi
   run_flatpak_updates || true
   run_fwupd_updates || true
   print_failed_update_summary
@@ -380,6 +408,13 @@ cmd_update() {
   if [ $# -eq 0 ]; then
     log_error "E201" "update requires at least one package"
     exit 201
+  fi
+  if [ "${OFFLINE:-0}" = "1" ]; then
+    log_info "OFFLINE" "Offline mode: skipping targeted updates"
+    if [ "${QUIET:-0}" != "1" ]; then
+      printf -- 'Offline mode active: skipping requested updates.\n'
+    fi
+    return 0
   fi
   REBUILD_MANIFEST=1
   manifest_require

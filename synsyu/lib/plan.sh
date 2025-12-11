@@ -4,10 +4,10 @@
 # Etiquette: Synavera Script Etiquette — Bash Profile v1.1.1
 #------------------------------------------------------------
 # Purpose:
-#   Thin wrapper that delegates plan generation to synsyu_core.
+#   Build a standalone update plan without touching the manifest.
 #
 # Security / Safety Notes:
-#   Read-only operations; relies on synsyu_core manifest.
+#   Read-only operations; queries package managers for update metadata.
 #------------------------------------------------------------
 # SSE Principles Observed:
 #   - Deterministic JSON output
@@ -15,7 +15,6 @@
 #============================================================
 
 cmd_plan() {
-  manifest_require
   plan_generate_core
 }
 
@@ -29,11 +28,12 @@ plan_generate_core() {
     return 1
   fi
 
-  local manifest_path
-  manifest_path="$(manifest_resolved_path)"
   local plan_path="${PLAN_PATH:-$DEFAULT_PLAN_PATH}"
-  local -a args=("plan" "--manifest" "$manifest_path" "--plan" "$plan_path")
+  local plan_dir
+  plan_dir="$(dirname "$plan_path")"
+  mkdir -p "$plan_dir"
 
+  local -a args=("plan" "--plan" "$plan_path")
   if [ "${NO_REPO:-0}" = "1" ]; then args+=("--no-repo"); fi
   if [ "${NO_AUR:-0}" = "1" ]; then args+=("--no-aur"); fi
   if [ "${APPLICATIONS_FLATPAK:-0}" = "1" ]; then args+=("--with-flatpak"); fi

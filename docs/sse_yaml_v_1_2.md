@@ -1,11 +1,21 @@
 <!--
-Synavera Script Etiquette — YAML Profile v1.1
-Derived from SSE v1.1 and SSE-JSON v1.1
-Author: CMD Draven
-Scope: Human-edited YAML used for configuration, orchestration, manifests, and policy under Synavera standards.
+Title: Synavera Script Etiquette — YAML Profile
+Version: 1.2
+Status: Stable
+SSE Profile: YAML Profile v1.2; Markdown & Documentation v1.2; Universal SSE v1.2
+Audience: Synavera developers, maintainers, security auditors, and tooling authors working with YAML
+Scope: Human-edited YAML for configuration, orchestration, manifests, and policy under Synavera standards.
+Last Reviewed: 2025-12-09T00:00:00Z
+Security / Safety: Non-compliant YAML may introduce configuration drift, unsafe defaults, or misapplied policy in Synavera systems.
+Migration Note: This YAML profile has been elevated to v1.2 by aligning document structure and metadata with SSE-Markdown v1.2 and Universal SSE v1.2; YAML authored against v1.1 remains valid but should be re-audited against this version.
+Linked Artifacts:
+  - Universal SSE: v1.2
+  - SSE-Markdown & Documentation Profile: v1.2
+  - SSE-JSON: v1.2
+  - Language Profiles: SSE-{{Bash,C Core,C Secure,C++,Integrated Control,Java,Kotlin,Python,Rust}} v1.2
 -->
 
-# Synavera Script Etiquette — YAML Profile v1.1
+# Synavera Script Etiquette — YAML Profile v1.2
 
 YAML under Synavera is for **humans first, machines second**.
 
@@ -245,7 +255,7 @@ For Synavera-native YAML, `_meta` SHOULD appear at the top level when the file i
 
 ```yaml
 _meta:
-  etiquette: "Synavera Script Etiquette — YAML Profile v1.1"
+  etiquette: "Synavera Script Etiquette — YAML Profile v1.2"
   project: "PROJECT OR MODULE NAME"
   document: "relative/path/to/file.yaml"
   purpose: >
@@ -318,4 +328,4 @@ A YAML artifact that claims to be “Synavera-compliant” must:
 Unstructured, opaque YAML that hides behaviour, policy, or user-impacting decisions has no place under the Synavera name.
 
 #============================================================
-*End of Synavera Script Etiquette — YAML Profile v1.1*
+*End of Synavera Script Etiquette — YAML Profile v1.2*

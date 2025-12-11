@@ -39,6 +39,7 @@ use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 
 use crate::error::{Result, SynsyuError};
+use crate::flatpak::FlatpakState;
 use crate::logger::Logger;
 use crate::pacman::InstalledPackage;
 
@@ -61,6 +62,12 @@ pub struct ManifestMetadata {
     pub aur_packages: usize,
     pub local_packages: usize,
     pub unknown_packages: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apps_flatpak: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apps_fwupd: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application_state: Option<ApplicationStateSummary>,
 }
 
 /// Per-package manifest entry.
@@ -86,7 +93,17 @@ pub struct PackageGroup {
 /// Optional application/firmware state.
 #[derive(Debug, Serialize, Default, Clone)]
 pub struct Applications {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flatpak: Option<FlatpakState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fwupd: Option<crate::fwupd::FwupdState>,
+}
+
+/// Lightweight summary of application state for manifest metadata.
+#[derive(Debug, Serialize, Default, Clone)]
+pub struct ApplicationStateSummary {
+    pub flatpak: usize,
+    pub fwupd: usize,
 }
 
 /// Source classification for an update candidate.
@@ -155,6 +172,9 @@ pub async fn build_manifest(
         aur_packages,
         local_packages,
         unknown_packages,
+        apps_flatpak: None,
+        apps_fwupd: None,
+        application_state: None,
     };
 
     Ok(ManifestDocument {
@@ -163,6 +183,43 @@ pub async fn build_manifest(
         packages_by_source,
         applications: Applications::default(),
     })
+}
+
+impl ManifestDocument {
+    /// Refresh metadata summaries based on collected application state.
+    pub fn refresh_application_metadata(&mut self) {
+        let flatpak_enabled = self
+            .applications
+            .flatpak
+            .as_ref()
+            .map(|f| f.enabled)
+            .unwrap_or(false);
+        let fwupd_enabled = self
+            .applications
+            .fwupd
+            .as_ref()
+            .map(|f| f.enabled)
+            .unwrap_or(false);
+        let flatpak_count = self
+            .applications
+            .flatpak
+            .as_ref()
+            .map(|f| f.installed_count)
+            .unwrap_or(0);
+        let fwupd_count = self
+            .applications
+            .fwupd
+            .as_ref()
+            .map(|f| f.device_count)
+            .unwrap_or(0);
+
+        self.metadata.apps_flatpak = Some(flatpak_enabled);
+        self.metadata.apps_fwupd = Some(fwupd_enabled);
+        self.metadata.application_state = Some(ApplicationStateSummary {
+            flatpak: flatpak_count,
+            fwupd: fwupd_count,
+        });
+    }
 }
 
 fn source_from_repo(repo: Option<&str>) -> PackageSource {

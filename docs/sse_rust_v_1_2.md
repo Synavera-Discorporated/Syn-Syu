@@ -1,11 +1,22 @@
 <!--
-Synavera Script Etiquette — Rust Profile v1.1.1
-Derived from SSE v1.1
-Author: CMD Draven
+Title: Synavera Script Etiquette — Rust Profile
+Version: 1.2
+Status: Stable
+SSE Profile: Rust Profile v1.2; Markdown & Documentation v1.2; Universal SSE v1.2
+Audience: Synavera developers, maintainers, security auditors, and tooling authors working with Rust
 Scope: Systems and application development in Rust under Synavera standards.
+Last Reviewed: 2025-12-09T00:00:00Z
+Security / Safety: Non-compliant Rust code may cause safety-contract violations, undefined behaviour through unsafe misuse, or reliability issues in Synavera systems.
+Migration Note: This Rust profile has been elevated to v1.2 by aligning document structure and metadata with SSE-Markdown v1.2 and Universal SSE v1.2; Rust code authored against v1.1 remains valid but should be re-audited against this version.
+Linked Artifacts:
+  - Universal SSE: v1.2
+  - SSE-Markdown & Documentation Profile: v1.2
+  - SSE-JSON: v1.2
+  - SSE-YAML: v1.2
+  - Language Profiles: SSE-{{Bash,C Core,C Secure,C++,Integrated Control,Java,Kotlin,Python,Rust}} v1.2
 -->
 
-# Synavera Script Etiquette — Rust Profile v1.1.1
+# Synavera Script Etiquette — Rust Profile v1.2.1
 
 ## 1. Verbosity vs Brevity
 **Chosen Approach:** Explicit + Intent‑Driven
@@ -105,7 +116,7 @@ Builds are reproducible on stable toolchains and documented. Release artifacts i
 /*============================================================
   Synavera Project: [PROJECT / CRATE NAME]
   Module: [crate::path::to::module]
-  Etiquette: Synavera Script Etiquette — Rust Profile v1.1.1
+  Etiquette: Synavera Script Etiquette — Rust Profile v1.2.1
   ------------------------------------------------------------
   Purpose:
     [Describe the module’s mission succinctly.]
@@ -142,4 +153,4 @@ Formatting with `rustfmt`; linting with `clippy` at a strict level. Documentatio
 ## 18. Conformance
 **Chosen Approach:** Universal precedence
 
-SSE‑Rust inherits the universal SSE v1.1. Where conflicts arise, the universal etiquette supersedes. A crate or module may not be labeled “Synavera‑compliant” unless it meets this profile’s mandates appropriate to its execution stratum.
+SSE‑Rust inherits the universal SSE v1.2. Where conflicts arise, the universal etiquette supersedes. A crate or module may not be labeled “Synavera‑compliant” unless it meets this profile’s mandates appropriate to its execution stratum.

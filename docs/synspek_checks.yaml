@@ -200,13 +200,19 @@ checks:
     entrypoint_id: cli-sync
     capability: sync_manifest_app_section_updates
     type: integration-cli
-    goal: manifest_update_applications_section reflects flatpak/fwupd flags.
-    method: "Seed manifest.json without applications; set APPLICATIONS_FLATPAK=1 APPLICATIONS_FWUPD=1 and stub flatpak list; call manifest_update_applications_section; assert applications block is populated accordingly."
+    goal: synsyu_core emits application sections when flatpak/fwupd flags are set.
+    method: "Stub flatpak and fwupdmgr outputs; run synsyu_core --with-flatpak --with-fwupd --dry-run pointing to a temp manifest path; assert manifest JSON includes applications.flatpak/fwupd and metadata flags."
     references:
 
-      - file: synsyu/lib/manifest.sh
-        symbol: manifest_update_applications_section
-        line: 43
+      - file: synsyu_core/src/main.rs
+        symbol: run_core
+        line: 292
+      - file: synsyu_core/src/flatpak.rs
+        symbol: collect_flatpak
+        line: 15
+      - file: synsyu_core/src/fwupd.rs
+        symbol: collect_fwupd
+        line: 107
 
   - id: update_dry_run_no_installs_check
     entrypoint_id: cli-update

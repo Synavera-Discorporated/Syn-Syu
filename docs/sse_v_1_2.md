@@ -1,21 +1,25 @@
 <!--
-Synavera Script Etiquette V1.1
-==================================================
-This etiquette applies to all Synavera codebases regardless of language.
-Individual language profiles (Rust, Python, Lua, JS, etc.) may extend this,
-but must never contradict the universal principles defined here.
+Title: Synavera Script Etiquette (Universal Profile)
+Version: 1.2
+Status: Stable
+SSE Profile: Markdown & Documentation v1.2; Universal SSE v1.2
+Audience: Synavera developers, maintainers, security auditors, and tooling authors
+Scope: Defines universal etiquette principles for all Synavera codebases; extended but never contradicted by language-specific profiles
+Last Reviewed: 2025-12-05T21:04:00Z
+Security / Safety: Establishes security, ethics, and auditability expectations for all Synavera software; non-compliance may introduce systemic risk
+Migration Note: This universal etiquette has been elevated to v1.2 under the Markdown SSE profile. Language-specific SSE documents remain at v1.1 until individually updated.
+Linked Artifacts:
+  - Language Profiles: SSE-{Bash,C Core,C Secure,C++,Integrated Control,Java,Kotlin,Python,Rust,Markdown,JSON,YAML} v1.2
 -->
 
-<!--
-Preface
-==================================================
+# Synavera Script Etiquette v1.2
+
+## Preface
+
 The Synavera Script Etiquette exists to define the moral and structural backbone of every line of code that bears the Synavera name.  
 It is not a style guide in the superficial sense; it is a covenant of clarity, accountability, and respect — between developer and system, between code and its operator, and between past and future maintainers. Each rule in this document embodies Synavera’s philosophy that security begins with understanding and that precision in communication is as critical as precision in computation. To write within Synavera’s ecosystem is to accept a duty: to make intent explicit, to document reasoning as rigorously as results, and to leave behind code that can stand as evidence of integrity. This etiquette governs not only how scripts are written, but how they think — transparent, disciplined, and ultimately answerable to the user.
-==================================================
--->
 
-
-# Synavera Script Etiquette
+---
 
 ## 1. Verbosity vs Brevity  
 **Chosen Approach:** Verbose + Explicit  
@@ -78,7 +82,7 @@ This universal etiquette defines the foundation for all Synavera codebases, but 
 ============================================================
  Synavera Project: [PROJECT / MODULE NAME]
  Module: [relative/path/to/file]
- Etiquette: Synavera Script Etiquette (SSE v1.1)
+ Etiquette: Synavera Script Etiquette (SSE v1.2)
 ------------------------------------------------------------
  Purpose:
    [Explain what this script or module does, in one or two sentences.
@@ -111,4 +115,4 @@ This universal etiquette defines the foundation for all Synavera codebases, but 
 
 ---
 
-*End of Synavera Script Etiquette v1.1*
+*End of Synavera Script Etiquette v1.2*
