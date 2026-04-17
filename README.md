@@ -6,6 +6,10 @@ manifest of the current system state (installed packages with source), build
 update plans from fresh sources, apply repo/AUR/app/firmware updates
 selectively, and produce detailed logs for review.
 
+Syn-Syu is source-aware and tool-aware. Different channels may use different
+bounded recovery strategies; pacman mirror failover is not treated as a generic
+solution for AUR helpers, PKGBUILD sources, Flatpak, or fwupd.
+
 ## Features
 
 - Coordinates pacman and AUR helpers with explicit include/exclude filters.
@@ -17,6 +21,9 @@ selectively, and produce detailed logs for review.
 - Configurable logging level with time and size-based log retention policies.
 - Validates download, build, and install footprint before updates, applying a
   configurable free-space buffer.
+- Applies source-aware bounded acquisition policy: pacman repos use mirror
+  failover, AUR RPC/helper paths use transient retry where safe, and other
+  channels remain tool-owned unless explicitly implemented.
 - Optional application updates for Flatpak and firmware (fwupd) with dedicated
   commands or opt-in flags that now also seed the manifest and plan.
 - Supports guided or advanced install workflows through optional tooling.
@@ -62,9 +69,8 @@ and copy binaries and libraries into a prefix you choose. An accompanying
 
 Syn-Syu looks for configuration at `~/.config/syn-syu/config.toml`. An example
 file is provided at `examples/config.toml`. You can view the merged
-configuration (defaults + file) via `synsyu config --show [--json]
-synsyu logs --prune # apply retention policy via synsyu_core`. Key
-options include:
+configuration with `synsyu_core config [--json]`; log retention pruning is
+available through `synsyu_core logs --prune`. Key options include:
 
 - `core.manifest_path` – output path for the generated manifest.
 - `space.min_free_gb` – reserved buffer that must remain free after updates.
@@ -77,6 +83,23 @@ options include:
 - `helpers.priority` – ordered list of AUR helpers to try.
 - `aur.max_parallel_requests` / `aur.max_kib_per_sec` – control how many AUR
   RPC calls run concurrently and optionally throttle each request in KiB/s.
+- `mirrors.enabled` – enables mirror-aware repo acquisition failover.
+- `mirrors.mirrorlist_path` / `mirrors.pacman_conf_path` – inputs used to read
+  mirror candidates and build temporary pacman configs without editing system
+  files.
+- `mirrors.probe`, `mirrors.probe_timeout_seconds`, `mirrors.max_candidates`,
+  and `mirrors.max_sync_age_hours` – bound mirror probing and stale-mirror
+  filtering.
+- `mirrors.cache_ttl_hours` / `mirrors.cache_path` – keep last-known probe
+  outcomes so the next rebuild can choose better first candidates before it
+  probes again.
+- `mirrors.max_failovers` / `mirrors.retry_delay_seconds` – bound repo
+  acquisition retries; attempts are limited to `max_failovers + 1`.
+- `acquisition.aur_rpc.*` – bounded transient retry for direct AUR RPC calls
+  used by `synsyu_core`.
+- `acquisition.aur_helper.*` – bounded transient retry around AUR helper
+  acquisition failures; build, dependency, signature, checksum, and PKGBUILD
+  failures are terminal.
 - `applications.flatpak` / `applications.fwupd` – defaults for including
   application/firmware updates in both manifest generation and `sync` (also
   exposed as commands and `--with-*` flags).
@@ -85,7 +108,27 @@ options include:
   define additional safety margin before installs proceed.
 
 CLI flags such as `--config`, `--include`, `--exclude`, `--dry-run`,
-`--no-aur`, `--no-repo`, and `--min-free-gb` override configuration on demand.
+`--no-aur`, `--no-repo`, `--mirrors`, `--no-mirrors`, and `--min-free-gb`
+override configuration on demand.
+
+Mirror failover does not replace pacman trust, signature, dependency, or
+transaction checks. Syn-Syu only cycles mirrors after retrieval-style failures
+such as timeouts or failed downloads. Signature, integrity, keyring, dependency,
+lock, disk, and conflict errors stop the mirror loop and are surfaced as final
+failures. Known-fresh mirrors are ranked ahead of mirrors whose freshness cannot
+be checked; stale mirrors are excluded from failover candidates. Syn-Syu creates
+temporary pacman config files for each attempt and does not permanently modify
+your system mirrorlist. Mirror status output includes a short outcome code such
+as `ready`, `stale`, `timeout`, `connect_failed`, or `http_error`.
+
+Syn-Syu is source-aware and tool-aware. Pacman mirror failover is pacman-specific.
+AUR RPC retry covers transient HTTP/network failures in Rust state generation.
+AUR helper retry covers clearly transient helper fetch/clone/download failures
+in Bash execution. PKGBUILD upstream source fallback, Flatpak retry policy, and
+fwupd retry policy are not implemented as Syn-Syu strategies yet; those channels
+remain separate future extension points or tool-owned behavior.
+For AUR RPC, `[acquisition.aur_rpc].max_retries` wins when set; legacy
+`[aur].max_retries` is used only when the new acquisition key is absent.
 
 ## Usage
 
@@ -107,6 +150,8 @@ synsyu fwupd      # Apply firmware updates via fwupdmgr
 synsyu sync --with-flatpak --with-fwupd  # include app/firmware updates in one sweep
 synsyu helpers    # List detected AUR helpers
 synsyu helper <name>  # Set helper for this session (or persist with helpers.sh)
+synsyu mirrors    # Show ranked mirror candidates recorded in the manifest
+synsyu acquisition # Show source-aware bounded acquisition policy
 synsyu config     # Show config path info
 synsyu groups-edit  # Open groups.toml in $EDITOR
 synsyu log        # Show log directory/retention info
@@ -122,6 +167,7 @@ The Rust binary is also available directly:
 ```bash
 synsyu_core --manifest ~/.config/syn-syu/manifest.json --with-fwupd --offline
 synsyu_core plan --manifest ~/.config/syn-syu/manifest.json --plan ~/.config/syn-syu/plan.json --json --strict
+synsyu_core mirrors --no-probe --json
 ```
 
 ## Development

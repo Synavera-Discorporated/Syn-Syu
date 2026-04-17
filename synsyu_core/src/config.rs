@@ -45,6 +45,10 @@ pub struct SynsyuConfig {
     #[serde(default)]
     pub helpers: HelperConfig,
     #[serde(default)]
+    pub mirrors: MirrorConfig,
+    #[serde(default)]
+    pub acquisition: AcquisitionConfig,
+    #[serde(default)]
     pub space: SpaceConfig,
     #[serde(default)]
     pub applications: ApplicationsConfig,
@@ -109,6 +113,8 @@ impl SynsyuConfig {
         self.aur = other.aur;
         self.core = other.core;
         self.helpers = other.helpers;
+        self.mirrors = other.mirrors;
+        self.acquisition = other.acquisition;
         self.space = other.space;
         self.applications = other.applications;
         self.logging = other.logging;
@@ -164,6 +170,27 @@ impl SynsyuConfig {
             log_directory: self.log_dir(),
             helper_priority: self.helpers.priority.clone(),
             helper_default: self.helpers.default.clone(),
+            mirrors_enabled: self.mirrors.enabled,
+            mirrors_mirrorlist_path: self.mirrors.mirrorlist_path.clone(),
+            mirrors_pacman_conf_path: self.mirrors.pacman_conf_path.clone(),
+            mirrors_probe: self.mirrors.probe,
+            mirrors_probe_timeout_seconds: self.mirrors.probe_timeout_seconds,
+            mirrors_max_candidates: self.mirrors.max_candidates,
+            mirrors_max_failovers: self.mirrors.max_failovers,
+            mirrors_retry_delay_seconds: self.mirrors.retry_delay_seconds,
+            mirrors_max_sync_age_hours: self.mirrors.max_sync_age_hours,
+            mirrors_cache_path: self.mirrors.cache_path.clone(),
+            mirrors_cache_ttl_hours: self.mirrors.cache_ttl_hours,
+            mirrors_servers: self.mirrors.servers.clone(),
+            acquisition_aur_rpc_enabled: self.acquisition.aur_rpc.enabled,
+            acquisition_aur_rpc_max_retries: self.resolved_aur_rpc_max_retries(),
+            acquisition_aur_rpc_retry_delay_seconds: self.acquisition.aur_rpc.retry_delay_seconds,
+            acquisition_aur_helper_enabled: self.acquisition.aur_helper.enabled,
+            acquisition_aur_helper_max_retries: self.acquisition.aur_helper.max_retries,
+            acquisition_aur_helper_retry_delay_seconds: self
+                .acquisition
+                .aur_helper
+                .retry_delay_seconds,
             space_min_free_bytes: self.space.min_free_bytes(),
             space_policy: self.space.policy.to_string(),
             batch_size: self.core.batch_size,
@@ -191,6 +218,8 @@ impl Default for SynsyuConfig {
             aur: AurConfig::default(),
             core: CoreConfig::default(),
             helpers: HelperConfig::default(),
+            mirrors: MirrorConfig::default(),
+            acquisition: AcquisitionConfig::default(),
             space: SpaceConfig::default(),
             applications: ApplicationsConfig::default(),
             logging: LoggingConfig::default(),
@@ -198,6 +227,16 @@ impl Default for SynsyuConfig {
             safety: SafetyConfig::default(),
             clean: CleanConfig::default(),
         }
+    }
+}
+
+impl SynsyuConfig {
+    /// Resolved AUR RPC retry count, preserving legacy [aur].max_retries as fallback.
+    pub fn resolved_aur_rpc_max_retries(&self) -> usize {
+        self.acquisition
+            .aur_rpc
+            .max_retries
+            .unwrap_or(self.aur.max_retries)
     }
 }
 
@@ -360,6 +399,184 @@ impl Default for HelperConfig {
     }
 }
 
+/// Source-aware bounded acquisition policy.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AcquisitionConfig {
+    #[serde(default)]
+    pub aur_rpc: AcquisitionAurRpcConfig,
+    #[serde(default)]
+    pub aur_helper: AcquisitionRetryConfig,
+}
+
+impl Default for AcquisitionConfig {
+    fn default() -> Self {
+        Self {
+            aur_rpc: AcquisitionAurRpcConfig::default(),
+            aur_helper: AcquisitionRetryConfig::default_aur_helper(),
+        }
+    }
+}
+
+/// Bounded retry policy for direct AUR RPC access in synsyu_core.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AcquisitionAurRpcConfig {
+    #[serde(default = "AcquisitionAurRpcConfig::default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub max_retries: Option<usize>,
+    #[serde(default = "AcquisitionAurRpcConfig::default_retry_delay_seconds")]
+    pub retry_delay_seconds: u64,
+}
+
+impl AcquisitionAurRpcConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_retry_delay_seconds() -> u64 {
+        2
+    }
+}
+
+impl Default for AcquisitionAurRpcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            max_retries: None,
+            retry_delay_seconds: Self::default_retry_delay_seconds(),
+        }
+    }
+}
+
+/// Generic bounded retry policy used by source-specific Bash execution paths.
+#[derive(Debug, Deserialize, Clone)]
+pub struct AcquisitionRetryConfig {
+    #[serde(default = "AcquisitionRetryConfig::default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "AcquisitionRetryConfig::default_max_retries")]
+    pub max_retries: usize,
+    #[serde(default = "AcquisitionRetryConfig::default_retry_delay_seconds")]
+    pub retry_delay_seconds: u64,
+}
+
+impl AcquisitionRetryConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_max_retries() -> usize {
+        1
+    }
+
+    fn default_retry_delay_seconds() -> u64 {
+        3
+    }
+
+    fn default_aur_helper() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            max_retries: Self::default_max_retries(),
+            retry_delay_seconds: Self::default_retry_delay_seconds(),
+        }
+    }
+}
+
+impl Default for AcquisitionRetryConfig {
+    fn default() -> Self {
+        Self::default_aur_helper()
+    }
+}
+
+/// Mirror discovery, probing, and failover policy.
+#[derive(Debug, Deserialize, Clone)]
+pub struct MirrorConfig {
+    #[serde(default = "MirrorConfig::default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "MirrorConfig::default_mirrorlist_path")]
+    pub mirrorlist_path: String,
+    #[serde(default = "MirrorConfig::default_pacman_conf_path")]
+    pub pacman_conf_path: String,
+    #[serde(default = "MirrorConfig::default_probe")]
+    pub probe: bool,
+    #[serde(default = "MirrorConfig::default_probe_timeout_seconds")]
+    pub probe_timeout_seconds: u64,
+    #[serde(default = "MirrorConfig::default_max_candidates")]
+    pub max_candidates: usize,
+    #[serde(default = "MirrorConfig::default_max_failovers")]
+    pub max_failovers: usize,
+    #[serde(default = "MirrorConfig::default_retry_delay_seconds")]
+    pub retry_delay_seconds: u64,
+    #[serde(default = "MirrorConfig::default_max_sync_age_hours")]
+    pub max_sync_age_hours: u64,
+    #[serde(default)]
+    pub cache_path: Option<String>,
+    #[serde(default = "MirrorConfig::default_cache_ttl_hours")]
+    pub cache_ttl_hours: u64,
+    #[serde(default)]
+    pub servers: Vec<String>,
+}
+
+impl MirrorConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_mirrorlist_path() -> String {
+        "/etc/pacman.d/mirrorlist".to_string()
+    }
+
+    fn default_pacman_conf_path() -> String {
+        "/etc/pacman.conf".to_string()
+    }
+
+    fn default_probe() -> bool {
+        true
+    }
+
+    fn default_probe_timeout_seconds() -> u64 {
+        3
+    }
+
+    fn default_max_candidates() -> usize {
+        6
+    }
+
+    fn default_max_failovers() -> usize {
+        2
+    }
+
+    fn default_retry_delay_seconds() -> u64 {
+        2
+    }
+
+    fn default_max_sync_age_hours() -> u64 {
+        48
+    }
+
+    fn default_cache_ttl_hours() -> u64 {
+        168
+    }
+}
+
+impl Default for MirrorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            mirrorlist_path: Self::default_mirrorlist_path(),
+            pacman_conf_path: Self::default_pacman_conf_path(),
+            probe: Self::default_probe(),
+            probe_timeout_seconds: Self::default_probe_timeout_seconds(),
+            max_candidates: Self::default_max_candidates(),
+            max_failovers: Self::default_max_failovers(),
+            retry_delay_seconds: Self::default_retry_delay_seconds(),
+            max_sync_age_hours: Self::default_max_sync_age_hours(),
+            cache_path: None,
+            cache_ttl_hours: Self::default_cache_ttl_hours(),
+            servers: Vec::new(),
+        }
+    }
+}
+
 /// Application metadata collection toggles.
 #[derive(Debug, Deserialize, Clone)]
 pub struct ApplicationsConfig {
@@ -487,6 +704,24 @@ pub struct ConfigReport {
     pub log_directory: PathBuf,
     pub helper_priority: Vec<String>,
     pub helper_default: Option<String>,
+    pub mirrors_enabled: bool,
+    pub mirrors_mirrorlist_path: String,
+    pub mirrors_pacman_conf_path: String,
+    pub mirrors_probe: bool,
+    pub mirrors_probe_timeout_seconds: u64,
+    pub mirrors_max_candidates: usize,
+    pub mirrors_max_failovers: usize,
+    pub mirrors_retry_delay_seconds: u64,
+    pub mirrors_max_sync_age_hours: u64,
+    pub mirrors_cache_path: Option<String>,
+    pub mirrors_cache_ttl_hours: u64,
+    pub mirrors_servers: Vec<String>,
+    pub acquisition_aur_rpc_enabled: bool,
+    pub acquisition_aur_rpc_max_retries: usize,
+    pub acquisition_aur_rpc_retry_delay_seconds: u64,
+    pub acquisition_aur_helper_enabled: bool,
+    pub acquisition_aur_helper_max_retries: usize,
+    pub acquisition_aur_helper_retry_delay_seconds: u64,
     pub space_min_free_bytes: u64,
     pub space_policy: String,
     pub batch_size: usize,

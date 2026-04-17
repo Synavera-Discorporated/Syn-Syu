@@ -32,17 +32,17 @@ entrypoints:
     source: {file: synsyu/lib/commands.sh, symbol: cmd_sync, line: 194}
     inputs:
       positional: []
-      options: ["--config", "--manifest", "--rebuild", "--plan", "--dry-run", "--no-aur", "--no-repo", "--helper", "--include", "--exclude", "--batch", "--min-free-gb", "--with-flatpak", "--with-fwupd", "--offline", "--verbose", "--json", "--confirm", "--noconfirm", "--quiet", "--strict", "--full-path", "--groups"]
-      config: ["[aur]", "[core]", "[helpers]", "[logging]", "[space]", "[safety]", "[applications]", "[snapshots]", "[clean]"]
+      options: ["--config", "--manifest", "--rebuild", "--plan", "--dry-run", "--no-aur", "--no-repo", "--mirrors", "--no-mirrors", "--helper", "--include", "--exclude", "--batch", "--min-free-gb", "--with-flatpak", "--with-fwupd", "--offline", "--verbose", "--json", "--confirm", "--noconfirm", "--quiet", "--strict", "--full-path", "--groups"]
+      config: ["[aur]", "[core]", "[helpers]", "[mirrors]", "[acquisition.aur_rpc]", "[acquisition.aur_helper]", "[logging]", "[space]", "[safety]", "[applications]", "[snapshots]", "[clean]"]
     outputs:
       stdout: ["progress lines", "summary counts", "log path"]
     side_effects:
       system: ["pacman transactions", "AUR helper transactions", "snapshot commands", "pacnew checks"]
-      files: ["manifest.json (ensure/rebuild)", "logs/*.log", "logs/*.log.hash"]
-      network: ["Arch mirrors via pacman", "AUR helper traffic", "optional flatpak/fwupd remotes"]
+      files: ["manifest.json (ensure/rebuild)", "mirror probe cache", "temporary pacman mirror configs", "logs/*.log", "logs/*.log.hash"]
+      network: ["Arch mirrors via pacman", "bounded mirror probes", "AUR helper traffic with bounded transient retry", "optional flatpak/fwupd remotes"]
     gated_by:
-      config: ["[helpers].priority", "[safety].disk_check", "[space].min_free_gb", "[applications].flatpak", "[applications].fwupd", "[snapshots].enabled"]
-      cli: ["--no-aur", "--no-repo", "--offline", "--with-flatpak", "--with-fwupd", "--dry-run"]
+      config: ["[helpers].priority", "[mirrors].enabled", "[mirrors].max_failovers", "[acquisition.aur_helper].enabled", "[acquisition.aur_helper].max_retries", "[safety].disk_check", "[space].min_free_gb", "[applications].flatpak", "[applications].fwupd", "[snapshots].enabled"]
+      cli: ["--no-aur", "--no-repo", "--mirrors", "--no-mirrors", "--offline", "--with-flatpak", "--with-fwupd", "--dry-run"]
     operation: {mode: mutating, requires_root: true}
     network_profile: {requires_network: true, targets: ["arch_mirrors", "aur_helper", "flatpak_remotes", "fwupd_channels"]}
     invariants:
@@ -62,6 +62,14 @@ entrypoints:
         text: "sync MUST update manifest applications section when app flags are set."
       - id: sync_log_prune_confined
         text: "sync MUST prune logs only within the configured log directory."
+      - id: sync_mirror_failover_bounded
+        text: "sync MUST cap repo mirror attempts at max_failovers + 1 and stop when candidates are exhausted."
+      - id: sync_mirror_failover_preserves_pacman_safety
+        text: "sync MUST NOT retry mirror failover for signature, integrity, dependency, lock, disk, or conflict failures."
+      - id: sync_aur_helper_retry_bounded
+        text: "sync MUST cap AUR helper acquisition attempts at acquisition.aur_helper.max_retries + 1."
+      - id: sync_aur_helper_terminal_failures_not_retried
+        text: "sync MUST NOT retry AUR helper execution for PKGBUILD, checksum, signature, dependency, conflict, or build failures."
     notes:
       - "Snapshot pre/post hooks can abort when require_success is set."
 
@@ -112,15 +120,49 @@ entrypoints:
     source: {file: synsyu/lib/commands.sh, symbol: cmd_core, line: 157}
     inputs:
       positional: []
-      options: ["--manifest", "--config", "--no-aur", "--no-repo", "--offline", "--verbose", "--dry-run"]
-      config: ["[core].manifest_path"]
+      options: ["--manifest", "--config", "--no-aur", "--no-repo", "--mirrors", "--no-mirrors", "--offline", "--verbose", "--dry-run"]
+      config: ["[core].manifest_path", "[aur]", "[mirrors]", "[acquisition.aur_rpc]"]
     outputs: {stdout: ["synsyu_core output"]}
     side_effects:
       system: ["runs synsyu_core binary; no installs"]
-      files: ["manifest.json"]
-      network: ["AUR origin detection unless --offline"]
+      files: ["manifest.json", "mirror probe cache"]
+      network: ["AUR origin detection with bounded transient RPC retry unless --offline/--no-aur", "bounded mirror probes unless --offline/--no-repo/--no-mirrors"]
     operation: {mode: read-only, requires_root: false}
-    network_profile: {requires_network: true, targets: ["aur_rpc"], note: "requires_network=false when --offline set"}
+    network_profile: {requires_network: true, targets: ["aur_rpc", "arch_mirror_probe"], note: "requires_network=false when --offline set"}
+
+  - id: cli-mirrors
+    name: mirrors
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_mirrors}
+    inputs:
+      positional: []
+      options: ["--manifest", "--config", "--rebuild", "--json", "--offline", "--mirrors", "--no-mirrors"]
+      config: ["[mirrors]"]
+    outputs: {stdout: ["mirror subsystem status", "ranked mirror candidates", "optional JSON"]}
+    side_effects:
+      system: ["runs synsyu_core when manifest rebuild is required; no installs"]
+      files: ["manifest.json (when rebuild is required)", "mirror probe cache", "logs/*.log"]
+      network: ["bounded mirror probes when rebuild is required and not disabled"]
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: true, targets: ["arch_mirror_probe"], note: "requires_network=false when --offline or --no-mirrors is set"}
+
+  - id: cli-acquisition
+    name: acquisition
+    type: cli-subcommand
+    binary: syn-syu
+    source: {file: synsyu/lib/commands.sh, symbol: cmd_acquisition}
+    inputs:
+      positional: []
+      options: ["--json", "--config"]
+      config: ["[mirrors]", "[acquisition.aur_rpc]", "[acquisition.aur_helper]"]
+    outputs: {stdout: ["source-aware bounded acquisition policy by channel"]}
+    side_effects:
+      system: []
+      files: []
+      network: []
+    operation: {mode: read-only, requires_root: false}
+    network_profile: {requires_network: false, targets: []}
 
   - id: cli-plan
     name: plan
@@ -160,7 +202,7 @@ entrypoints:
     side_effects:
       system: ["pacman/helper installs for requested packages"]
       files: ["manifest.json (rebuilt)", "logs/*.log"]
-      network: ["mirrors/AUR helper"]
+      network: ["mirrors/AUR helper with bounded transient retry for install path"]
     operation: {mode: mutating, requires_root: true}
     network_profile: {requires_network: true, targets: ["arch_mirrors", "aur_helper"]}
     invariants:
@@ -415,19 +457,21 @@ entrypoints:
     source: {file: synsyu_core/src/main.rs, symbol: run_core, line: 124}
     inputs:
       positional: []
-      options: ["--config", "--manifest", "--log", "--package <PKG>", "--dry-run", "--verbose", "--offline", "--with-fwupd"]
-      config: ["[aur]", "[core]", "[helpers]", "[space]"]
+      options: ["--config", "--manifest", "--log", "--package <PKG>", "--dry-run", "--verbose", "--offline", "--mirrors", "--no-mirrors", "--with-fwupd"]
+      config: ["[aur]", "[core]", "[helpers]", "[space]", "[mirrors]", "[acquisition.aur_rpc]"]
     outputs:
       stdout: ["manifest summary"]
       files: ["manifest.json", "logs when --log is provided"]
     side_effects:
       system: ["pacman -Qi/vercmp queries", "optional fwupdmgr get-devices"]
-      network: ["AUR origin detection unless --offline"]
+      network: ["AUR origin detection with bounded transient RPC retry unless --offline"]
     operation: {mode: read-only, requires_root: false}
     network_profile: {requires_network: true, targets: ["aur_rpc"], note: "requires_network=false when --offline"}
     invariants:
       - id: config_rejects_world_writable
         text: "config loader MUST reject world-writable configuration files."
+      - id: core_aur_rpc_retry_bounded
+        text: "core MUST cap direct AUR RPC attempts at acquisition.aur_rpc.max_retries + 1 and retry only transient HTTP/network failures."
 
   - id: bin-plan
     name: plan

@@ -52,11 +52,7 @@ pub struct PlanOutput {
 }
 
 impl PlanCommand {
-    pub async fn execute(
-        &self,
-        config: &SynsyuConfig,
-        plan_path: PathBuf,
-    ) -> Result<PlanOutput> {
+    pub async fn execute(&self, config: &SynsyuConfig, plan_path: PathBuf) -> Result<PlanOutput> {
         let mut errors: Vec<String> = Vec::new();
         let mut sources: Vec<String> = Vec::new();
 

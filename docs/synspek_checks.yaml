@@ -184,6 +184,70 @@ checks:
         symbol: log_prune
         line: 70
 
+  - id: mirror_parse_rank_unit
+    entrypoint_id: cli-mirrors
+    capability: sync_mirror_failover_bounded
+    type: unit-rust
+    goal: Mirror discovery ignores comments, filters unsupported schemes, deduplicates, prefers known-fresh mirrors, and uses cached outcomes to improve pre-probe ordering.
+    method: "Use mirrors.rs unit tests with fixture mirrorlist contents, synthetic candidates, and a synthetic probe cache; assert active servers, ranked order, and cached good mirrors promoted before the probe limit."
+    references:
+
+      - file: synsyu_core/src/mirrors.rs
+        symbol: parse_mirrorlist_contents
+
+      - file: synsyu_core/src/mirrors.rs
+        symbol: rank_candidates
+
+  - id: mirror_retry_classifier
+    entrypoint_id: cli-sync
+    capability: sync_mirror_failover_preserves_pacman_safety
+    type: integration-cli
+    goal: Mirror failover retries retrieval failures but stops on pacman safety failures.
+    method: "Stub sudo pacman to emit a failed-download error for the first mirror and success for the second; assert two attempts. Repeat with a signature/integrity error and assert only one attempt."
+    references:
+
+      - file: synsyu/lib/commands.sh
+        symbol: pacman_failure_retryable
+
+      - file: synsyu/lib/commands.sh
+        symbol: run_repo_batch_with_mirrors
+
+  - id: aur_helper_retry_classifier
+    entrypoint_id: cli-sync
+    capability: sync_aur_helper_terminal_failures_not_retried
+    type: unit-bash
+    goal: AUR helper retry policy retries only transient transport/fetch failures.
+    method: "Run `bash tests/aur_helper_retry_classifier.sh`; assert DNS, timeout, Git RPC, and HTTP 5xx messages are retryable while checksum, signature, dependency, PKGBUILD, and build failures are terminal."
+    references:
+
+      - file: synsyu/lib/commands.sh
+        symbol: aur_helper_failure_retryable
+
+      - file: tests/aur_helper_retry_classifier.sh
+        symbol: assert_retryable
+
+  - id: aur_rpc_retry_policy_unit
+    entrypoint_id: bin-core
+    capability: core_aur_rpc_retry_bounded
+    type: unit-rust
+    goal: Direct AUR RPC retry is bounded to transient HTTP conditions.
+    method: "Run pacman.rs unit tests; assert 429, timeout, and 5xx statuses are retryable while 400/404 statuses are terminal."
+    references:
+
+      - file: synsyu_core/src/pacman.rs
+        symbol: aur_rpc_status_retryable
+
+  - id: acquisition_policy_status
+    entrypoint_id: cli-acquisition
+    capability: sync_aur_helper_retry_bounded
+    type: integration-cli
+    goal: Status output exposes channel-specific bounded acquisition policy.
+    method: "Run `syn-syu acquisition --json` with a fixture config; assert pacman_repo, aur_rpc, aur_helper, pkgbuild_sources, flatpak, and fwupd keys are present and max_attempts equals retries + 1 for implemented retry channels."
+    references:
+
+      - file: synsyu/lib/commands.sh
+        symbol: cmd_acquisition
+
   - id: config_permissions_rejection
     entrypoint_id: bin-core
     capability: config_rejects_world_writable

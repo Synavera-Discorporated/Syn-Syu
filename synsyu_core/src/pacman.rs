@@ -31,12 +31,16 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::process::Stdio;
 use std::str::FromStr;
+use std::time::Duration;
 
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use tokio::process::Command;
+use tokio::time::sleep;
 
+use crate::config::{AcquisitionAurRpcConfig, AurConfig};
 use crate::error::{Result, SynsyuError};
+use crate::logger::Logger;
 use crate::package_info::VersionInfo;
 use urlencoding::encode;
 
@@ -327,34 +331,82 @@ async fn detect_foreign_packages() -> Result<HashSet<String>> {
 }
 
 /// Query AUR to see which package names exist there.
-pub async fn aur_presence(names: &[String], offline: bool) -> Result<HashSet<String>> {
+pub async fn aur_presence(
+    names: &[String],
+    offline: bool,
+    aur_config: &AurConfig,
+    policy: &AcquisitionAurRpcConfig,
+    max_retries: usize,
+    logger: &Logger,
+) -> Result<HashSet<String>> {
     if offline || names.is_empty() {
         return Ok(HashSet::new());
     }
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(aur_config.timeout.max(1)))
+        .build()
+        .map_err(|err| SynsyuError::Network(format!("AUR RPC client setup failed: {err}")))?;
     let mut found = HashSet::new();
-    const CHUNK: usize = 100;
-    for chunk in names.chunks(CHUNK) {
-        let mut query = String::from("https://aur.archlinux.org/rpc/?v=5&type=info");
+    let chunk_size = aur_config.max_args.max(1);
+    let attempts = if policy.enabled {
+        max_retries.saturating_add(1)
+    } else {
+        1
+    };
+    for chunk in names.chunks(chunk_size) {
+        let mut query = aur_rpc_base_query(&aur_config.base_url);
         for name in chunk {
             query.push_str("&arg[]=");
             query.push_str(encode(name).as_ref());
         }
-        let resp = client
-            .get(&query)
-            .send()
-            .await
-            .map_err(|err| SynsyuError::Network(format!("AUR request failed: {err}")))?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(SynsyuError::Network(format!(
-                "AUR request failed with status {status}"
-            )));
+
+        let mut last_error = String::new();
+        let mut body: Option<AurResponse> = None;
+        for attempt in 1..=attempts {
+            match query_aur_rpc_once(&client, &query).await {
+                Ok(response) => {
+                    body = Some(response);
+                    if attempt > 1 {
+                        logger.info(
+                            "AUR_RPC",
+                            format!("AUR RPC request succeeded on attempt {attempt}/{attempts}"),
+                        );
+                    }
+                    break;
+                }
+                Err(AurRpcAttemptError { message, retryable }) => {
+                    last_error = message;
+                    if !policy.enabled || !retryable || attempt >= attempts {
+                        if retryable && attempt >= attempts {
+                            logger.warn(
+                                "AUR_RPC",
+                                format!(
+                                    "AUR RPC retry budget exhausted after {attempts} attempt(s): {last_error}"
+                                ),
+                            );
+                        }
+                        return Err(SynsyuError::Network(format!(
+                            "AUR request failed: {last_error}"
+                        )));
+                    }
+                    logger.warn(
+                        "AUR_RPC",
+                        format!(
+                            "AUR RPC transient failure on attempt {attempt}/{attempts}: {last_error}"
+                        ),
+                    );
+                    if policy.retry_delay_seconds > 0 {
+                        sleep(Duration::from_secs(policy.retry_delay_seconds)).await;
+                    }
+                }
+            }
         }
-        let body: AurResponse = resp
-            .json()
-            .await
-            .map_err(|err| SynsyuError::Network(format!("AUR response parse failed: {err}")))?;
+
+        let Some(body) = body else {
+            return Err(SynsyuError::Network(format!(
+                "AUR request failed: {last_error}"
+            )));
+        };
         if body.resp_type.as_deref() != Some("multiinfo") {
             continue;
         }
@@ -367,6 +419,53 @@ pub async fn aur_presence(names: &[String], offline: bool) -> Result<HashSet<Str
         }
     }
     Ok(found)
+}
+
+struct AurRpcAttemptError {
+    message: String,
+    retryable: bool,
+}
+
+async fn query_aur_rpc_once(
+    client: &Client,
+    query: &str,
+) -> std::result::Result<AurResponse, AurRpcAttemptError> {
+    let resp = client
+        .get(query)
+        .send()
+        .await
+        .map_err(|err| AurRpcAttemptError {
+            message: err.to_string(),
+            retryable: err.is_timeout() || err.is_connect() || err.is_request(),
+        })?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(AurRpcAttemptError {
+            message: format!("HTTP status {status}"),
+            retryable: aur_rpc_status_retryable(status),
+        });
+    }
+    resp.json().await.map_err(|err| AurRpcAttemptError {
+        message: format!("response parse failed: {err}"),
+        retryable: true,
+    })
+}
+
+fn aur_rpc_base_query(base_url: &str) -> String {
+    let mut base = base_url.trim().trim_end_matches('/').to_string();
+    if base.is_empty() {
+        base = "https://aur.archlinux.org/rpc".to_string();
+    }
+    format!("{base}/?v=5&type=info")
+}
+
+fn aur_rpc_status_retryable(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::BAD_GATEWAY
+        || status == StatusCode::SERVICE_UNAVAILABLE
+        || status == StatusCode::GATEWAY_TIMEOUT
+        || status.is_server_error()
 }
 
 #[derive(Debug, Deserialize)]
@@ -411,5 +510,26 @@ fn map_spawn_error(err: io::Error, command: &str) -> SynsyuError {
         }
     } else {
         SynsyuError::Runtime(format!("Failed to spawn {command}: {err}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aur_rpc_status_retry_policy_is_bounded_to_transient_http() {
+        assert!(aur_rpc_status_retryable(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(aur_rpc_status_retryable(StatusCode::TOO_MANY_REQUESTS));
+        assert!(!aur_rpc_status_retryable(StatusCode::NOT_FOUND));
+        assert!(!aur_rpc_status_retryable(StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn aur_rpc_base_query_normalizes_url() {
+        assert_eq!(
+            aur_rpc_base_query("https://aur.archlinux.org/rpc/"),
+            "https://aur.archlinux.org/rpc/?v=5&type=info"
+        );
     }
 }

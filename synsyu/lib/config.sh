@@ -61,6 +61,10 @@ logging = data.get("logging", {})
 space = data.get("space", {})
 applications = data.get("applications", {})
 helpers_section = data.get("helpers", {})
+mirrors = data.get("mirrors", {})
+acquisition = data.get("acquisition", {})
+acquisition_aur_rpc = acquisition.get("aur_rpc", {})
+acquisition_aur_helper = acquisition.get("aur_helper", {})
 
 log_directory = logging.get("directory") or core.get("log_directory", "")
 
@@ -94,7 +98,22 @@ settings = {
     "clean_remove_orphans": clean.get("remove_orphans", False),
     "clean_check_pacnew": clean.get("check_pacnew", True),
     "apps_flatpak_enabled": applications.get("flatpak", False),
-    "apps_fwupd_enabled": applications.get("fwupd", False)
+    "apps_fwupd_enabled": applications.get("fwupd", False),
+    "mirrors_enabled": mirrors.get("enabled", True),
+    "mirrors_probe": mirrors.get("probe", True),
+    "mirrors_mirrorlist_path": mirrors.get("mirrorlist_path", "/etc/pacman.d/mirrorlist"),
+    "mirrors_pacman_conf_path": mirrors.get("pacman_conf_path", "/etc/pacman.conf"),
+    "mirrors_max_candidates": mirrors.get("max_candidates", 6),
+    "mirrors_max_failovers": mirrors.get("max_failovers", 2),
+    "mirrors_retry_delay_seconds": mirrors.get("retry_delay_seconds", 2),
+    "mirrors_probe_timeout_seconds": mirrors.get("probe_timeout_seconds", 3),
+    "mirrors_max_sync_age_hours": mirrors.get("max_sync_age_hours", 48),
+    "acquisition_aur_rpc_enabled": acquisition_aur_rpc.get("enabled", True),
+    "acquisition_aur_rpc_max_retries": acquisition_aur_rpc.get("max_retries", data.get("aur", {}).get("max_retries", 3)),
+    "acquisition_aur_rpc_retry_delay_seconds": acquisition_aur_rpc.get("retry_delay_seconds", 2),
+    "acquisition_aur_helper_enabled": acquisition_aur_helper.get("enabled", True),
+    "acquisition_aur_helper_max_retries": acquisition_aur_helper.get("max_retries", 1),
+    "acquisition_aur_helper_retry_delay_seconds": acquisition_aur_helper.get("retry_delay_seconds", 3)
 }
 
 print(json.dumps(settings))
@@ -105,6 +124,10 @@ PY
 
   local manifest_path helper_line helper_default log_dir batch_size log_level retention_days retention_mb
   local apps_flatpak apps_fwupd
+  local mirrors_enabled mirrors_probe mirrors_mirrorlist mirrors_pacman_conf
+  local mirrors_max_candidates mirrors_max_failovers mirrors_retry_delay mirrors_probe_timeout mirrors_max_sync_age
+  local acquisition_aur_rpc_enabled acquisition_aur_rpc_max_retries acquisition_aur_rpc_retry_delay
+  local acquisition_aur_helper_enabled acquisition_aur_helper_max_retries acquisition_aur_helper_retry_delay
   if [ -n "$py_output" ]; then
     manifest_path="$(printf '%s' "$py_output" | jq -r '.manifest // ""')"
     helper_line="$(printf '%s' "$py_output" | jq -r '.helper_priority | join(" ")')"
@@ -116,6 +139,21 @@ PY
     batch_size="$(printf '%s' "$py_output" | jq -r '.batch_size // 10')"
     apps_flatpak="$(printf '%s' "$py_output" | jq -r '.apps_flatpak_enabled // false')"
     apps_fwupd="$(printf '%s' "$py_output" | jq -r '.apps_fwupd_enabled // false')"
+    mirrors_enabled="$(printf '%s' "$py_output" | jq -r '.mirrors_enabled // true')"
+    mirrors_probe="$(printf '%s' "$py_output" | jq -r '.mirrors_probe // true')"
+    mirrors_mirrorlist="$(printf '%s' "$py_output" | jq -r '.mirrors_mirrorlist_path // "/etc/pacman.d/mirrorlist"')"
+    mirrors_pacman_conf="$(printf '%s' "$py_output" | jq -r '.mirrors_pacman_conf_path // "/etc/pacman.conf"')"
+    mirrors_max_candidates="$(printf '%s' "$py_output" | jq -r '.mirrors_max_candidates // 6')"
+    mirrors_max_failovers="$(printf '%s' "$py_output" | jq -r '.mirrors_max_failovers // 2')"
+    mirrors_retry_delay="$(printf '%s' "$py_output" | jq -r '.mirrors_retry_delay_seconds // 2')"
+    mirrors_probe_timeout="$(printf '%s' "$py_output" | jq -r '.mirrors_probe_timeout_seconds // 3')"
+    mirrors_max_sync_age="$(printf '%s' "$py_output" | jq -r '.mirrors_max_sync_age_hours // 48')"
+    acquisition_aur_rpc_enabled="$(printf '%s' "$py_output" | jq -r '.acquisition_aur_rpc_enabled // true')"
+    acquisition_aur_rpc_max_retries="$(printf '%s' "$py_output" | jq -r '.acquisition_aur_rpc_max_retries // 3')"
+    acquisition_aur_rpc_retry_delay="$(printf '%s' "$py_output" | jq -r '.acquisition_aur_rpc_retry_delay_seconds // 2')"
+    acquisition_aur_helper_enabled="$(printf '%s' "$py_output" | jq -r '.acquisition_aur_helper_enabled // true')"
+    acquisition_aur_helper_max_retries="$(printf '%s' "$py_output" | jq -r '.acquisition_aur_helper_max_retries // 1')"
+    acquisition_aur_helper_retry_delay="$(printf '%s' "$py_output" | jq -r '.acquisition_aur_helper_retry_delay_seconds // 3')"
     local min_free_bytes_config
     min_free_bytes_config="$(printf '%s' "$py_output" | jq -r '.space_min_free_bytes // empty')"
     local space_mode
@@ -221,6 +259,63 @@ PY
     if [ -z "$APPLICATIONS_FWUPD_CLI" ] && [ "$apps_fwupd" = "true" ]; then
       APPLICATIONS_FWUPD=1
     fi
+
+    if [ -z "${MIRRORS_CLI_OVERRIDE:-}" ]; then
+      if [ "$mirrors_enabled" = "true" ]; then
+        MIRRORS_ENABLED=1
+      elif [ "$mirrors_enabled" = "false" ]; then
+        MIRRORS_ENABLED=0
+      fi
+    fi
+    if [ "$mirrors_probe" = "true" ]; then
+      MIRRORS_PROBE=1
+    elif [ "$mirrors_probe" = "false" ]; then
+      MIRRORS_PROBE=0
+    fi
+    if [ -n "$mirrors_mirrorlist" ] && [ "$mirrors_mirrorlist" != "null" ]; then
+      MIRRORLIST_PATH="$mirrors_mirrorlist"
+    fi
+    if [ -n "$mirrors_pacman_conf" ] && [ "$mirrors_pacman_conf" != "null" ]; then
+      MIRROR_PACMAN_CONF="$mirrors_pacman_conf"
+    fi
+    if [[ "$mirrors_max_candidates" =~ ^[0-9]+$ ]]; then
+      MIRRORS_MAX_CANDIDATES="$mirrors_max_candidates"
+    fi
+    if [[ "$mirrors_max_failovers" =~ ^[0-9]+$ ]]; then
+      MIRRORS_MAX_FAILOVERS="$mirrors_max_failovers"
+    fi
+    if [[ "$mirrors_retry_delay" =~ ^[0-9]+$ ]]; then
+      MIRRORS_RETRY_DELAY_SECONDS="$mirrors_retry_delay"
+    fi
+    if [[ "$mirrors_probe_timeout" =~ ^[0-9]+$ ]]; then
+      MIRRORS_PROBE_TIMEOUT_SECONDS="$mirrors_probe_timeout"
+    fi
+    if [[ "$mirrors_max_sync_age" =~ ^[0-9]+$ ]]; then
+      MIRRORS_MAX_SYNC_AGE_HOURS="$mirrors_max_sync_age"
+    fi
+
+    if [ "$acquisition_aur_rpc_enabled" = "true" ]; then
+      ACQUISITION_AUR_RPC_ENABLED=1
+    elif [ "$acquisition_aur_rpc_enabled" = "false" ]; then
+      ACQUISITION_AUR_RPC_ENABLED=0
+    fi
+    if [[ "$acquisition_aur_rpc_max_retries" =~ ^[0-9]+$ ]]; then
+      ACQUISITION_AUR_RPC_MAX_RETRIES="$acquisition_aur_rpc_max_retries"
+    fi
+    if [[ "$acquisition_aur_rpc_retry_delay" =~ ^[0-9]+$ ]]; then
+      ACQUISITION_AUR_RPC_RETRY_DELAY_SECONDS="$acquisition_aur_rpc_retry_delay"
+    fi
+    if [ "$acquisition_aur_helper_enabled" = "true" ]; then
+      ACQUISITION_AUR_HELPER_ENABLED=1
+    elif [ "$acquisition_aur_helper_enabled" = "false" ]; then
+      ACQUISITION_AUR_HELPER_ENABLED=0
+    fi
+    if [[ "$acquisition_aur_helper_max_retries" =~ ^[0-9]+$ ]]; then
+      ACQUISITION_AUR_HELPER_MAX_RETRIES="$acquisition_aur_helper_max_retries"
+    fi
+    if [[ "$acquisition_aur_helper_retry_delay" =~ ^[0-9]+$ ]]; then
+      ACQUISITION_AUR_HELPER_RETRY_DELAY_SECONDS="$acquisition_aur_helper_retry_delay"
+    fi
   fi
 
   if [ ${#HELPER_PRIORITY[@]} -eq 0 ]; then
@@ -231,5 +326,8 @@ PY
   fi
   if [ -n "${MIN_FREE_SPACE_OVERRIDE_BYTES:-}" ]; then
     MIN_FREE_SPACE_BYTES="$MIN_FREE_SPACE_OVERRIDE_BYTES"
+  fi
+  if [ "$MIRRORS_MAX_CANDIDATES" -le 0 ]; then
+    MIRRORS_MAX_CANDIDATES=1
   fi
 }

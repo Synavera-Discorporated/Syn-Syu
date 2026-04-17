@@ -62,6 +62,16 @@ parse_cli() {
         OFFLINE=1
         shift
         ;;
+      --mirrors)
+        MIRRORS_ENABLED=1
+        MIRRORS_CLI_OVERRIDE=1
+        shift
+        ;;
+      --no-mirrors)
+        MIRRORS_ENABLED=0
+        MIRRORS_CLI_OVERRIDE=1
+        shift
+        ;;
       --quiet|-q)
         QUIET=1
         shift
@@ -182,6 +192,7 @@ enforce_offline_mode() {
   NO_REPO=1
   APPLICATIONS_FLATPAK=0
   APPLICATIONS_FWUPD=0
+  MIRRORS_ENABLED=0
 }
 
 #--- parse_post_command_flags
@@ -208,6 +219,20 @@ parse_post_command_flags() {
         ;;
       --offline)
         OFFLINE=1
+        ;;
+      --mirrors)
+        MIRRORS_ENABLED=1
+        MIRRORS_CLI_OVERRIDE=1
+        ;;
+      --no-mirrors)
+        MIRRORS_ENABLED=0
+        MIRRORS_CLI_OVERRIDE=1
+        ;;
+      --json)
+        JSON_OUTPUT=1
+        ;;
+      --rebuild)
+        REBUILD_MANIFEST=1
         ;;
       --verbose)
         LOG_VERBOSE=1

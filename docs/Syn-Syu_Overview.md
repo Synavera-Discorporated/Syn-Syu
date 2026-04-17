@@ -8,10 +8,15 @@ updates across official repositories and the Arch User Repository.
 
 - **synsyu_core** – Rust binary that enumerates installed packages and emits a
   structured JSON manifest at `~/.config/syn-syu/manifest.json` (configurable)
-  describing the current state: what is installed and which source it came from.
+  describing the current state: what is installed, which source it came from,
+  direct AUR RPC source classification, and bounded network state such as
+  ranked pacman mirror candidates.
 - **syn-syu** – Bash CLI that parses the manifest, builds update plans, selects
-  helpers, and executes updates per user intent. Logging follows the Synavera
-  Script Etiquette and is kept under `~/.local/share/syn-syu/` by default.
+  helpers, applies source-aware bounded acquisition policy, and executes updates
+  per user intent. Pacman repos, AUR RPC, and AUR helper acquisition use
+  different recovery strategies because their transports and failure modes are
+  different. Logging follows the Synavera Script Etiquette and is kept under
+  `~/.local/share/syn-syu/` by default.
 - **syn-syu plan** – Builds an update plan from fresh sources (pacman, AUR,
   Flatpak, fwupd when enabled), writes it to `~/.config/syn-syu/plan.json`, and
   prints a concise summary (with optional strict/JSON modes).
@@ -42,6 +47,28 @@ the Syn-Syu config directory (not under `/tmp`).
       "install_date": "2024-11-01T12:00:00Z",
       "validated_by": "Signature"
     }
+  },
+  "network": {
+    "mirrors": {
+      "enabled": true,
+      "status": "ready",
+      "source": "mirrorlist",
+      "source_path": "/etc/pacman.d/mirrorlist",
+      "max_failovers": 2,
+      "candidate_count": 6,
+      "usable_count": 3,
+      "candidates": [
+        {
+          "rank": 1,
+          "server": "https://mirror.example/archlinux/$repo/os/$arch",
+          "status": "ready",
+          "outcome": "ready",
+          "freshness": "fresh",
+          "usable": true,
+          "latency_ms": 94
+        }
+      ]
+    }
   }
 }
 ```
@@ -52,6 +79,25 @@ is installed; update planning and disk checks live elsewhere.
 When Flatpak or firmware updates are requested, the manifest also includes an
 `applications` block capturing the chosen sources (`flatpak` / `fwupd`), whether
 they were enabled during manifest generation, and any discovered updates.
+
+When mirror probing is enabled, `synsyu_core` also records `network.mirrors`.
+The Bash layer treats that state as advisory input for repo acquisition only.
+It does not rewrite `/etc/pacman.d/mirrorlist`; for each attempt it creates a
+temporary pacman config that points the existing mirrorlist include at a
+one-line temporary mirrorlist. Pacman still performs repository, package,
+signature, dependency, and transaction validation.
+
+Operationally: when repo downloads fail because a mirror is unreachable, slow,
+or stale, Syn-Syu can try a bounded number of alternate mirrors. It does not
+retry integrity or trust failures. It does not modify your system mirrorlist
+permanently.
+
+For AUR operations, Syn-Syu does not pretend that every failure is a mirror
+problem. Direct AUR RPC calls in `synsyu_core` use bounded retry with the
+configured fixed delay for transient HTTP or network failures. AUR helper
+execution in Bash may retry clearly transient helper fetch/clone/download
+failures. PKGBUILD, checksum, signature, dependency, conflict, and build
+failures stop immediately.
 
 ## CLI Sketch
 
@@ -73,6 +119,8 @@ they were enabled during manifest generation, and any discovered updates.
 | `syn-syu export` | Export repo/AUR package lists for replication. |
 | `syn-syu helpers` | List detected AUR helpers. |
 | `syn-syu helper <name>` | Set helper for this session (persist with helpers.sh). |
+| `syn-syu mirrors` | Show ranked pacman mirror candidates recorded in the manifest. |
+| `syn-syu acquisition` | Show source-aware bounded acquisition policies by channel. |
 | `syn-syu config` | Show config path info. |
 | `syn-syu groups-edit` | Open groups file in `$EDITOR`. |
 | `syn-syu log` | Show log directory/retention info. |
@@ -82,7 +130,8 @@ Use `syn-syu --help` for the full flag list.
 
 ### Power-user Flags
 
-- `--json` – machine-readable output for `check` and `inspect`.
+- `--json` – machine-readable output where supported, including `check`,
+  `inspect`, `mirrors`, and `acquisition`.
 - `--quiet`/`-q` – suppress non-essential output; logs still written.
 - `--confirm`/`--noconfirm` – toggle interactive confirmations passed to helpers
   and pacman (default is non-interactive).
@@ -91,6 +140,8 @@ Use `syn-syu --help` for the full flag list.
   `sync` (both flags repeatable; evaluated as Bash regex).
 - `--batch <N>` – repo package batch size; defaults to `core.batch_size` from
   config or `10`.
+- `--mirrors` / `--no-mirrors` – enable or disable repo mirror failover for the
+  current run without changing config.
 - `--with-flatpak` / `--with-fwupd` – opt into Flatpak and firmware updates
   during manifest generation and `sync` (also available as standalone commands).
 - `plan` flags: `--json`, `--strict`, `--offline`, `--no-aur`, `--no-repo`,
@@ -108,6 +159,31 @@ Use `syn-syu --help` for the full flag list.
 - **pacnew detection** – after successful updates, Syn-Syu scans for
   `.pacnew/.pacsave` files (using `pacdiff` when available) and surfaces them in
   logs/console so you can merge configuration changes promptly.
+- **Source-aware acquisition policy** – Syn-Syu treats each source/channel
+  separately. Pacman repo downloads use mirror failover. AUR RPC uses bounded
+  HTTP/network retry in Rust. AUR helper execution uses bounded retry only for
+  transient helper acquisition failures. PKGBUILD upstream source fallback,
+  Flatpak retry policy, and fwupd retry policy are explicit future/tool-owned
+  channels, not hidden pacman-style behavior.
+- **Mirror-aware repo acquisition** – when enabled, `synsyu_core` reads active
+  pacman `Server =` entries from the configured mirrorlist or from explicit
+  `[mirrors].servers`, probes a small bounded set, ranks usable mirrors by
+  freshness first and response latency second, and marks mirrors stale when
+  `lastsync` is older than `max_sync_age_hours`. Mirrors with unknown freshness
+  remain usable but sort after known-fresh mirrors. The Bash layer retries repo
+  batches against at most `max_failovers + 1` usable mirrors and stops when the
+  budget is exhausted. It only retries retrieval-style failures such as failed
+  downloads, DNS errors, timeouts, and connection resets. Signature, integrity,
+  keyring, dependency, lock, disk, and conflict errors are not mirror-retryable
+  and remain final. Status output includes a compact outcome code such as
+  `ready`, `stale`, `timeout`, `connect_failed`, or `http_error` so a failed
+  candidate can be diagnosed without reading the full probe message first.
+- **AUR bounded acquisition** – direct AUR RPC calls retry transient HTTP
+  failures such as 429, timeout, and 5xx responses within the configured retry
+  budget. AUR helper execution retries only clear transport/fetch failures such
+  as DNS failure, timeout, TLS/connect failure, or transient Git transport
+  errors. PKGBUILD, checksum, signature, dependency, conflict, and build
+  failures are terminal and are not retried by Syn-Syu.
 - **Application updates** – opt into Flatpak and firmware (fwupd) updates via
   config (`[applications]`) or on-demand commands `syn-syu flatpak` /
   `syn-syu fwupd`, or include them in both the manifest and `sync` with
@@ -143,6 +219,31 @@ max_kib_per_sec = 0
 flatpak = false
 fwupd = false
 
+[mirrors]
+enabled = true
+mirrorlist_path = "/etc/pacman.d/mirrorlist"
+pacman_conf_path = "/etc/pacman.conf"
+probe = true
+probe_timeout_seconds = 3
+max_candidates = 6
+max_failovers = 2
+retry_delay_seconds = 2
+max_sync_age_hours = 48
+cache_ttl_hours = 168
+# cache_path = "~/.cache/syn-syu/mirror-probes.json"
+# Optional explicit candidates; when non-empty these replace mirrorlist discovery.
+# servers = ["https://mirror.example/archlinux/$repo/os/$arch"]
+
+[acquisition.aur_rpc]
+enabled = true
+max_retries = 2
+retry_delay_seconds = 2
+
+[acquisition.aur_helper]
+enabled = true
+max_retries = 1
+retry_delay_seconds = 3
+
 [snapshots]
 enabled = false
 pre_command = "sudo snapper create --description 'Syn-Syu pre-update'"
@@ -168,6 +269,47 @@ firmware updates when building the manifest and during subsequent `sync`
 operations; CLI flags `--with-flatpak` and `--with-fwupd` override the defaults.
 Flatpak metadata is appended by the Bash layer after `synsyu_core` runs; the
 core binary itself only supports `--with-fwupd`.
+
+The `[mirrors]` section controls repo mirror failover. `enabled = true` records
+mirror state in the manifest and allows the Bash layer to cycle official repo
+package acquisition through usable candidates. `max_candidates` limits how many
+servers are considered from the source list. `probe_timeout_seconds` limits
+each HTTP probe. `max_sync_age_hours` controls freshness: stale mirrors are
+excluded, known-fresh mirrors rank ahead of freshness-unknown mirrors, and
+latency is used within those groups. `max_failovers` means additional mirrors
+after the first attempt, so the maximum attempts for a repo batch are
+`max_failovers + 1`, further capped by the number of usable candidates.
+`retry_delay_seconds` inserts a short pause between retryable failures.
+`cache_ttl_hours` keeps last-known probe outcomes for a bounded time so the next
+manifest rebuild can choose better first candidates before it probes again. The
+cache is only an ordering hint; fresh probe results still replace cached results,
+and retry bounds do not change.
+
+This feature is aimed at standard Arch-style repository layouts where official
+repos share the configured mirrorlist include and mirror URLs contain `$repo`
+and `$arch`. Syn-Syu replaces matching `Include = mirrorlist_path` lines only in
+a temporary pacman config for the current attempt. Custom repositories that use
+the same include path should be reviewed before enabling mirror failover. This
+feature does not guarantee successful downloads whenever internet access exists;
+it only gives Syn-Syu a bounded way to move past clearly unreliable mirrors
+without hiding serious pacman errors.
+
+The `[acquisition.aur_rpc]` section controls direct AUR RPC retry used by the
+Rust backend for source classification and state gathering. `max_retries` means
+additional tries after the first request, and `retry_delay_seconds` is a fixed
+pause between retryable failures. `[acquisition.aur_rpc].max_retries` has
+precedence when set; legacy `[aur].max_retries` is used only when the new
+acquisition key is absent. `synsyu_core config` and `syn-syu acquisition` show
+the effective value. Retryable conditions are transient HTTP/network failures,
+not malformed package metadata or local policy failures.
+
+The `[acquisition.aur_helper]` section controls Bash-layer retry around helper
+execution for AUR packages. It is deliberately conservative: Syn-Syu retries
+helper transport/fetch failures, but stops immediately for PKGBUILD,
+dependency, checksum, signature, conflict, and build failures. PKGBUILD
+upstream source fallback is a separate future problem because safe handling
+depends on makepkg/helper semantics and upstream source arrays, not pacman
+mirrors.
 
 The `[space]` section defines `min_free_gb`, a buffer that must remain free on
 disk before updates proceed, and `mode`, which controls behaviour when the

@@ -41,6 +41,7 @@ use serde::Serialize;
 use crate::error::{Result, SynsyuError};
 use crate::flatpak::FlatpakState;
 use crate::logger::Logger;
+use crate::mirrors::MirrorState;
 use crate::pacman::InstalledPackage;
 
 /// Wrapper representing the full manifest document.
@@ -50,6 +51,8 @@ pub struct ManifestDocument {
     pub packages: BTreeMap<String, ManifestEntry>,
     pub packages_by_source: Vec<PackageGroup>,
     pub applications: Applications,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkState>,
 }
 
 /// Metadata block describing manifest context.
@@ -97,6 +100,12 @@ pub struct Applications {
     pub flatpak: Option<FlatpakState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fwupd: Option<crate::fwupd::FwupdState>,
+}
+
+/// Optional network state used by the Bash orchestrator for bounded failover.
+#[derive(Debug, Serialize, Clone)]
+pub struct NetworkState {
+    pub mirrors: MirrorState,
 }
 
 /// Lightweight summary of application state for manifest metadata.
@@ -182,6 +191,7 @@ pub async fn build_manifest(
         packages: entries,
         packages_by_source,
         applications: Applications::default(),
+        network: None,
     })
 }
 

@@ -26,6 +26,42 @@ mode = "warn"
 [helpers]
 priority = ["paru", "yay", "trizen", "pikaur"]
 
+[mirrors]
+# Mirror failover applies only to official repo package acquisition.
+# Syn-Syu reads active Server entries from mirrorlist_path, probes a bounded
+# subset, and asks pacman to use one temporary mirror config per attempt.
+# Known-fresh mirrors rank before freshness-unknown mirrors; stale mirrors are excluded.
+# Best suited to standard Arch-style repos sharing this mirrorlist include.
+enabled = true
+mirrorlist_path = "/etc/pacman.d/mirrorlist"
+pacman_conf_path = "/etc/pacman.conf"
+probe = true
+probe_timeout_seconds = 3
+max_candidates = 6
+max_failovers = 2
+retry_delay_seconds = 2
+max_sync_age_hours = 48
+# Last-known probe outcomes improve ordering before the next bounded probe.
+cache_ttl_hours = 168
+# cache_path = "~/.cache/syn-syu/mirror-probes.json"
+# Optional explicit server list. When non-empty, this replaces mirrorlist discovery.
+# servers = ["https://mirror.example/archlinux/$repo/os/$arch"]
+
+[acquisition.aur_rpc]
+# Direct AUR RPC calls are used by synsyu_core for source classification.
+# max_retries means additional retries after the first request.
+# This value wins over legacy [aur].max_retries when set.
+enabled = true
+max_retries = 2
+retry_delay_seconds = 2
+
+[acquisition.aur_helper]
+# Helper execution may retry transient network/fetch failures only.
+# PKGBUILD, checksum, signature, dependency, conflict, and build failures are terminal.
+enabled = true
+max_retries = 1
+retry_delay_seconds = 3
+
 [snapshots]
 enabled = false
 pre_command = "sudo snapper create --description 'Syn-Syu pre-update'"

@@ -79,6 +79,12 @@ manifest_rebuild() {
   if [ "${OFFLINE:-0}" = "1" ]; then
     args+=("--offline")
   fi
+  if [ "${MIRRORS_CLI_OVERRIDE:-}" = "1" ] && [ "${MIRRORS_ENABLED:-1}" = "1" ]; then
+    args+=("--mirrors")
+  fi
+  if [ "${MIRRORS_ENABLED:-1}" != "1" ]; then
+    args+=("--no-mirrors")
+  fi
 
   if ! "$core_bin" "${args[@]}"; then
     log_error "E304" "synsyu_core invocation failed"
@@ -309,6 +315,69 @@ manifest_package_requirements() {
   ' "$manifest_path"
 }
 
+#--- manifest_mirror_candidates_stream
+manifest_mirror_candidates_stream() {
+  local manifest_path
+  manifest_path="$(manifest_resolved_path)"
+  if [ ! -f "$manifest_path" ]; then
+    return 1
+  fi
+  jq -r '
+    (.network.mirrors.candidates // [])
+    | .[]
+    | select(.usable == true)
+    | .server
+  ' "$manifest_path"
+}
+
+#--- manifest_mirror_summary
+manifest_mirror_summary() {
+  local manifest_path
+  manifest_path="$(manifest_resolved_path)"
+  if [ ! -f "$manifest_path" ]; then
+    return 1
+  fi
+  jq -r '
+    .network.mirrors // empty
+    | [
+        (.enabled // false),
+        (.status // "unknown"),
+        (.source // "unknown"),
+        (.source_path // ""),
+        (.probe_enabled // false),
+        (.usable_count // 0),
+        (.candidate_count // 0),
+        (.max_failovers // 0),
+        (.retry_delay_seconds // 0),
+        (.reason // "")
+      ] | @tsv
+  ' "$manifest_path"
+}
+
+#--- manifest_mirror_details
+manifest_mirror_details() {
+  local manifest_path
+  manifest_path="$(manifest_resolved_path)"
+  if [ ! -f "$manifest_path" ]; then
+    return 1
+  fi
+  jq -r '
+    (.network.mirrors.candidates // [])
+    | .[]
+    | [
+        (.rank // 0),
+        (.status // "unknown"),
+        (.outcome // "unknown"),
+        (.freshness // "unknown"),
+        (.usable // false),
+        ((.latency_ms // "") | tostring),
+        (.lastsync_age_seconds // ""),
+        (.reason // ""),
+        (.server // "")
+      ] | @tsv
+  ' "$manifest_path"
+}
+
 #--- manifest_inspect
 manifest_inspect() {
   local package="$1"
@@ -362,4 +431,11 @@ manifest_summary() {
   printf 'Packages: %s (pacman: %s, aur: %s, local: %s, unknown: %s)\n' "$pkgs" "$pac" "$aur" "$local_pkgs" "$unknown"
   printf 'Flatpak recorded: %s (installed: %s)\n' "$flatpak_enabled" "$flatpak_inst"
   printf 'FWUPD recorded: %s (devices: %s)\n' "$fwupd_enabled" "$fwupd_devices"
+  local mirror_summary
+  mirror_summary="$(manifest_mirror_summary || true)"
+  if [ -n "$mirror_summary" ]; then
+    local mirrors_enabled mirrors_status mirrors_source mirrors_source_path mirrors_probe mirrors_usable mirrors_total mirrors_failovers mirrors_retry mirrors_reason
+    IFS=$'\t' read -r mirrors_enabled mirrors_status mirrors_source mirrors_source_path mirrors_probe mirrors_usable mirrors_total mirrors_failovers mirrors_retry mirrors_reason <<<"$mirror_summary"
+    printf 'Mirrors: enabled=%s status=%s usable=%s/%s failovers=%s retry_delay=%ss\n' "$mirrors_enabled" "$mirrors_status" "$mirrors_usable" "$mirrors_total" "$mirrors_failovers" "$mirrors_retry"
+  fi
 }

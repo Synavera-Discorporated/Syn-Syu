@@ -36,16 +36,268 @@ matches_filters() {
   return 0
 }
 
+#--- run_pacman_repo_batch
+run_pacman_repo_batch() {
+  local config_path="${1:-}"
+  shift || true
+  local -a pkgs=("$@")
+  [ "${#pkgs[@]}" -gt 0 ] || return 0
+  local -a args=()
+  if [ -n "$config_path" ]; then
+    args+=(--config "$config_path")
+  fi
+  args+=(-S)
+  if [ "$NO_CONFIRM" = "1" ]; then
+    args+=(--noconfirm)
+  fi
+  # Security: invokes pacman with sudo; limited to manifest-selected repo packages.
+  set +e
+  sudo pacman "${args[@]}" "${pkgs[@]}"
+  local status=$?
+  set -e
+  return "$status"
+}
+
+#--- pacman_failure_retryable
+pacman_failure_retryable() {
+  local message="${1:-}"
+  local lower="${message,,}"
+
+  case "$lower" in
+    *"invalid or corrupted package"*|*"corrupted package"*|*"signature"*|*"pgp"*|*"gpgme"*|*"keyring"*|*"unknown trust"*|*"marginal trust"*|*"checksum"*|*"integrity"*|*"failed to commit transaction"*|*"conflicting files"*|*"exists in filesystem"*|*"could not satisfy dependencies"*|*"unresolvable package conflicts"*|*"database is locked"*|*"not enough free disk space"*|*"target not found"*)
+      return 1
+      ;;
+  esac
+
+  case "$lower" in
+    *"failed retrieving file"*|*"failed to retrieve some files"*|*"could not resolve host"*|*"connection timed out"*|*"operation too slow"*|*"the requested url returned error"*|*"failed to synchronize all databases"*|*"download library error"*|*"failed to retrieve"*|*"server returned error"*|*"connection refused"*|*"connection reset"*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+#--- aur_helper_failure_retryable
+aur_helper_failure_retryable() {
+  local message="${1:-}"
+  local lower="${message,,}"
+
+  case "$lower" in
+    *"checksum"*|*"sha256"*|*"sha512"*|*"validity check"*|*"one or more files did not pass"*|*"pgp"*|*"signature"*|*"unknown trust"*|*"marginal trust"*|*"could not satisfy dependencies"*|*"dependency"*|*"conflict"*|*"failed to build"*|*"build failed"*|*"pkgbuild"*|*"prepare()"*|*"build()"*|*"package()"*)
+      return 1
+      ;;
+  esac
+
+  case "$lower" in
+    *"could not resolve host"*|*"connection timed out"*|*"operation timed out"*|*"operation too slow"*|*"connection reset"*|*"connection refused"*|*"network is unreachable"*|*"temporary failure in name resolution"*|*"failed to connect"*|*"tls"*|*"ssl"*|*"fatal: unable to access"*|*"rpc failed"*|*"early eof"*|*"http 5"*|*"the requested url returned error: 5"*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+#--- run_aur_helper_update
+run_aur_helper_update() {
+  local helper="$1" pkg="$2"
+  local -a hargs=(-S)
+  [ "$NO_CONFIRM" = "1" ] && hargs+=(--noconfirm)
+
+  local attempt_limit=1
+  if [ "${ACQUISITION_AUR_HELPER_ENABLED:-1}" = "1" ]; then
+    attempt_limit=$((ACQUISITION_AUR_HELPER_MAX_RETRIES + 1))
+  fi
+  if [ "$attempt_limit" -lt 1 ]; then
+    attempt_limit=1
+  fi
+
+  local attempt=1 status stderr_file stderr_text
+  while [ "$attempt" -le "$attempt_limit" ]; do
+    stderr_file="$(mktemp "${TMPDIR:-/tmp}/synsyu_aur_helper_XXXXXX")"
+    log_info "ACQUIRE" "AUR helper acquisition attempt $attempt/$attempt_limit for $pkg using $helper"
+    set +e
+    "$helper" "${hargs[@]}" "$pkg" 2>"$stderr_file"
+    status=$?
+    set -e
+
+    if [ "$status" -eq 0 ]; then
+      log_info "ACQUIRE" "AUR helper acquisition succeeded for $pkg on attempt $attempt"
+      rm -f "$stderr_file"
+      return 0
+    fi
+
+    stderr_text="$(tr '\n' ' ' <"$stderr_file" 2>/dev/null || true)"
+    if [ -s "$stderr_file" ]; then
+      printf '%s\n' "$stderr_text" >&2
+    fi
+    rm -f "$stderr_file"
+    log_warn "ACQUIRE" "AUR helper acquisition failed for $pkg on attempt $attempt with exit $status: ${stderr_text:-no stderr captured}"
+
+    if ! aur_helper_failure_retryable "$stderr_text"; then
+      log_error "ACQUIRE" "AUR helper failure for $pkg is terminal for Syn-Syu retry policy"
+      return "$status"
+    fi
+
+    attempt=$((attempt + 1))
+    if [ "$attempt" -le "$attempt_limit" ] && [ "${ACQUISITION_AUR_HELPER_RETRY_DELAY_SECONDS:-0}" -gt 0 ]; then
+      log_info "ACQUIRE" "Waiting ${ACQUISITION_AUR_HELPER_RETRY_DELAY_SECONDS}s before retrying AUR helper acquisition for $pkg"
+      sleep "$ACQUISITION_AUR_HELPER_RETRY_DELAY_SECONDS"
+    fi
+  done
+
+  log_error "ACQUIRE" "AUR helper retry budget exhausted for $pkg after $attempt_limit attempt(s)"
+  return 1
+}
+
+#--- mirror_create_pacman_config
+mirror_create_pacman_config() {
+  local server="$1"
+  local tmp_dir="$2"
+  local temp_mirrorlist="$tmp_dir/mirrorlist"
+  local temp_config="$tmp_dir/pacman.conf"
+
+  printf 'Server = %s\n' "$server" >"$temp_mirrorlist"
+
+  MIRROR_PACMAN_CONF="$MIRROR_PACMAN_CONF" \
+  MIRRORLIST_PATH="$MIRRORLIST_PATH" \
+  TEMP_MIRRORLIST="$temp_mirrorlist" \
+  TEMP_PACMAN_CONF="$temp_config" \
+  python3 - <<'PY'
+import os
+import re
+import sys
+
+source = os.environ["MIRROR_PACMAN_CONF"]
+mirrorlist = os.environ["MIRRORLIST_PATH"]
+temp_mirrorlist = os.environ["TEMP_MIRRORLIST"]
+target = os.environ["TEMP_PACMAN_CONF"]
+
+try:
+    with open(source, "r", encoding="utf-8") as handle:
+        lines = handle.readlines()
+except OSError as err:
+    print(f"failed to read pacman config {source}: {err}", file=sys.stderr)
+    sys.exit(1)
+
+pattern = re.compile(r"^(\s*)Include\s*=\s*" + re.escape(mirrorlist) + r"\s*(#.*)?$")
+replaced = 0
+out = []
+for line in lines:
+    match = pattern.match(line)
+    if match:
+        indent = match.group(1) or ""
+        out.append(f"{indent}Include = {temp_mirrorlist}\n")
+        replaced += 1
+    else:
+        out.append(line)
+
+if replaced == 0:
+    print(f"no Include = {mirrorlist} line found in {source}", file=sys.stderr)
+    sys.exit(2)
+
+try:
+    with open(target, "w", encoding="utf-8") as handle:
+        handle.writelines(out)
+except OSError as err:
+    print(f"failed to write temporary pacman config {target}: {err}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+#--- run_repo_batch_default
+run_repo_batch_default() {
+  local -a pkgs=("$@")
+  run_pacman_repo_batch "" "${pkgs[@]}"
+}
+
+#--- run_repo_batch_with_mirrors
+run_repo_batch_with_mirrors() {
+  local -a pkgs=("$@")
+  [ "${#pkgs[@]}" -gt 0 ] || return 0
+
+  if [ "${MIRRORS_ENABLED:-1}" != "1" ]; then
+    log_info "MIRROR" "Mirror failover disabled; using pacman default mirror configuration"
+    run_repo_batch_default "${pkgs[@]}"
+    return $?
+  fi
+
+  local -a mirror_candidates=()
+  mapfile -t mirror_candidates < <(manifest_mirror_candidates_stream || true)
+  if [ "${#mirror_candidates[@]}" -eq 0 ]; then
+    log_warn "MIRROR" "No usable mirror candidates in manifest; using pacman default mirror configuration"
+    run_repo_batch_default "${pkgs[@]}"
+    return $?
+  fi
+
+  local attempt_limit=$((MIRRORS_MAX_FAILOVERS + 1))
+  if [ "$attempt_limit" -lt 1 ]; then
+    attempt_limit=1
+  fi
+  if [ "$attempt_limit" -gt "${#mirror_candidates[@]}" ]; then
+    attempt_limit="${#mirror_candidates[@]}"
+  fi
+
+  local attempt=1 server tmp_dir pacman_config status stderr_file stderr_text
+  while [ "$attempt" -le "$attempt_limit" ]; do
+    server="${mirror_candidates[$((attempt - 1))]}"
+    tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/synsyu_mirror_XXXXXX")"
+    pacman_config="$tmp_dir/pacman.conf"
+    stderr_file="$tmp_dir/pacman.stderr"
+
+    log_info "MIRROR" "Repo batch attempt $attempt/$attempt_limit using mirror: $server"
+    if ! mirror_create_pacman_config "$server" "$tmp_dir" 2>"$stderr_file"; then
+      stderr_text="$(tr '\n' ' ' <"$stderr_file" 2>/dev/null || true)"
+      log_warn "MIRROR" "Unable to prepare temporary pacman config: ${stderr_text:-unknown error}"
+      rm -rf "$tmp_dir"
+      run_repo_batch_default "${pkgs[@]}"
+      return $?
+    fi
+
+    local -a pacman_args=(--config "$pacman_config" -S)
+    if [ "$NO_CONFIRM" = "1" ]; then
+      pacman_args+=(--noconfirm)
+    fi
+    set +e
+    sudo pacman "${pacman_args[@]}" "${pkgs[@]}" 2>"$stderr_file"
+    status=$?
+    set -e
+
+    if [ "$status" -eq 0 ]; then
+      log_info "MIRROR" "Repo batch succeeded on mirror attempt $attempt"
+      rm -rf "$tmp_dir"
+      return 0
+    fi
+
+    stderr_text="$(tr '\n' ' ' <"$stderr_file" 2>/dev/null || true)"
+    if [ -s "$stderr_file" ]; then
+      printf '%s\n' "$stderr_text" >&2
+    fi
+    log_warn "MIRROR" "Repo batch failed on mirror attempt $attempt with pacman exit $status: ${stderr_text:-no stderr captured}"
+
+    if ! pacman_failure_retryable "$stderr_text"; then
+      log_error "MIRROR" "Pacman failure is not mirror-retryable; stopping mirror failover"
+      rm -rf "$tmp_dir"
+      return "$status"
+    fi
+
+    rm -rf "$tmp_dir"
+    attempt=$((attempt + 1))
+    if [ "$attempt" -le "$attempt_limit" ] && [ "${MIRRORS_RETRY_DELAY_SECONDS:-0}" -gt 0 ]; then
+      log_info "MIRROR" "Waiting ${MIRRORS_RETRY_DELAY_SECONDS}s before next mirror attempt"
+      sleep "$MIRRORS_RETRY_DELAY_SECONDS"
+    fi
+  done
+
+  log_error "MIRROR" "Mirror retry budget exhausted after $attempt_limit attempt(s)"
+  return 1
+}
+
 #--- run_repo_batch
 run_repo_batch() {
   local -a pkgs=("$@")
   [ "${#pkgs[@]}" -gt 0 ] || return 0
-  local -a args=(-S)
-  if [ "$NO_CONFIRM" = "1" ]; then
-    args+=(--noconfirm)
-  fi
-  # Security: invokes pacman with sudo; limited to user-requested repo packages.
-  sudo pacman "${args[@]}" "${pkgs[@]}"
+  run_repo_batch_with_mirrors "${pkgs[@]}"
 }
 
 #--- run_snapshot
@@ -122,6 +374,12 @@ dispatch_command() {
     helpers)
       cmd_helpers
       ;;
+    mirrors)
+      cmd_mirrors
+      ;;
+    acquisition)
+      cmd_acquisition
+      ;;
     config)
       cmd_config "${COMMAND_ARGS[@]}"
       ;;
@@ -185,6 +443,12 @@ cmd_core() {
     if [ "${OFFLINE:-0}" = "1" ]; then
       args+=("--offline")
     fi
+    if [ "${MIRRORS_CLI_OVERRIDE:-}" = "1" ] && [ "${MIRRORS_ENABLED:-1}" = "1" ]; then
+      args+=("--mirrors")
+    fi
+    if [ "${MIRRORS_ENABLED:-1}" != "1" ]; then
+      args+=("--no-mirrors")
+    fi
     "$core_bin" "${args[@]}" || exit $?
   else
     manifest_rebuild
@@ -239,15 +503,15 @@ cmd_sync() {
         fi
         repo_batch+=("$pkg")
         if [ "${#repo_batch[@]}" -ge "$BATCH_SIZE" ]; then
-          if ! run_repo_batch "${repo_batch[@]}"; then
+          if run_repo_batch "${repo_batch[@]}"; then
+            processed=$((processed + ${#repo_batch[@]}))
+          else
             local status=$?
             log_warn "UPDATE" "Failed repo batch: ${repo_batch[*]}"
             for pkg in "${repo_batch[@]}"; do
               record_failed_update "$pkg" "pacman batch failed (exit $status)"
             done
             failed=$((failed + ${#repo_batch[@]}))
-          else
-            processed=$((processed + ${#repo_batch[@]}))
           fi
           repo_batch=()
         fi
@@ -264,15 +528,15 @@ cmd_sync() {
   done < <(manifest_updates_stream || true)
 
   if [ "${#repo_batch[@]}" -gt 0 ] && [ "$DRY_RUN" = "0" ]; then
-    if ! run_repo_batch "${repo_batch[@]}"; then
+    if run_repo_batch "${repo_batch[@]}"; then
+      processed=$((processed + ${#repo_batch[@]}))
+    else
       local status=$?
       log_warn "UPDATE" "Failed repo batch: ${repo_batch[*]}"
       for pkg in "${repo_batch[@]}"; do
         record_failed_update "$pkg" "pacman batch failed (exit $status)"
       done
       failed=$((failed + ${#repo_batch[@]}))
-    else
-      processed=$((processed + ${#repo_batch[@]}))
     fi
   fi
 
@@ -359,12 +623,11 @@ execute_update() {
         record_failed_update "$pkg" "disk check failed (see logs)"
         return 1
       fi
-      # Security: requires sudo to install repo package updates.
-      local -a args=(-S)
-      [ "$NO_CONFIRM" = "1" ] && args+=(--noconfirm)
-      if ! sudo pacman "${args[@]}" "$pkg"; then
+      if run_repo_batch "$pkg"; then
+        :
+      else
         local status=$?
-        record_failed_update "$pkg" "pacman exited $status"
+        record_failed_update "$pkg" "repo acquisition failed (exit $status)"
         return 1
       fi
       ;;
@@ -383,9 +646,9 @@ execute_update() {
         return 1
       fi
       # Security: helper executes as invoking user; it will escalate internally if needed.
-      local -a hargs=(-S)
-      [ "$NO_CONFIRM" = "1" ] && hargs+=(--noconfirm)
-      if ! "$helper" "${hargs[@]}" "$pkg"; then
+      if run_aur_helper_update "$helper" "$pkg"; then
+        :
+      else
         local status=$?
         record_failed_update "$pkg" "$helper exited $status"
         return 1
@@ -535,7 +798,7 @@ cmd_inspect() {
 cmd_check() {
   manifest_require
   if [ "$JSON_OUTPUT" = "1" ]; then
-    jq -c '{metadata: .metadata, updates: (.packages | to_entries | map(select(.value.update_available==true) | {key, value}))}' "$SYN_MANIFEST_PATH" || true
+    jq -c '{metadata: .metadata, mirrors: (.network.mirrors // {}), updates: (.packages | to_entries | map(select(.value.update_available==true) | {key, value}))}' "$SYN_MANIFEST_PATH" || true
   else
     printf -- '-> Manifest summary\n'
     manifest_summary || log_warn "MANIFEST" "Unable to summarize manifest"
@@ -747,6 +1010,143 @@ cmd_helpers() {
   fi
 }
 
+#--- cmd_mirrors
+cmd_mirrors() {
+  manifest_require
+  if [ "$JSON_OUTPUT" = "1" ]; then
+    jq -c '.network.mirrors // {}' "$SYN_MANIFEST_PATH" || true
+    return 0
+  fi
+
+  local summary
+  summary="$(manifest_mirror_summary || true)"
+  if [ -z "$summary" ]; then
+    printf 'No mirror state recorded in manifest. Run `syn-syu --rebuild mirrors` to refresh it.\n'
+    return 0
+  fi
+
+  local enabled status source source_path probe usable total failovers retry reason
+  IFS=$'\t' read -r enabled status source source_path probe usable total failovers retry reason <<<"$summary"
+  printf 'Mirror subsystem: %s\n' "$status"
+  printf 'Enabled: %s\n' "$enabled"
+  printf 'Source: %s\n' "$source"
+  if [ -n "$source_path" ]; then
+    printf 'Source path: %s\n' "$source_path"
+  fi
+  printf 'Probe enabled: %s\n' "$probe"
+  printf 'Usable candidates: %s/%s\n' "$usable" "$total"
+  printf 'Bounds: max_failovers=%s retry_delay_seconds=%s\n' "$failovers" "$retry"
+  if [ -n "$reason" ]; then
+    printf 'Reason: %s\n' "$reason"
+  fi
+
+  local details
+  details="$(manifest_mirror_details || true)"
+  if [ -n "$details" ]; then
+    printf '\nCandidates:\n'
+    while IFS=$'\t' read -r rank cand_status outcome freshness cand_usable latency age cand_reason server; do
+      [ -z "$rank" ] && continue
+      if [ -n "$latency" ]; then
+        latency="${latency}ms"
+      else
+        latency="-"
+      fi
+      if [ -n "$age" ]; then
+        age="${age}s"
+      else
+        age="-"
+      fi
+      printf '  %s. [%s] outcome=%s freshness=%s usable=%s latency=%s lastsync_age=%s %s' "$rank" "$cand_status" "$outcome" "$freshness" "$cand_usable" "$latency" "$age" "$server"
+      if [ -n "$cand_reason" ]; then
+        printf ' (%s)' "$cand_reason"
+      fi
+      printf '\n'
+    done <<<"$details"
+  fi
+}
+
+#--- cmd_acquisition
+cmd_acquisition() {
+  if [ "$JSON_OUTPUT" = "1" ]; then
+    jq -n \
+      --argjson mirrors_enabled "$MIRRORS_ENABLED" \
+      --argjson mirror_failovers "$MIRRORS_MAX_FAILOVERS" \
+      --argjson mirror_attempts "$((MIRRORS_MAX_FAILOVERS + 1))" \
+      --argjson mirror_delay "$MIRRORS_RETRY_DELAY_SECONDS" \
+      --argjson aur_rpc_enabled "$ACQUISITION_AUR_RPC_ENABLED" \
+      --argjson aur_rpc_retries "$ACQUISITION_AUR_RPC_MAX_RETRIES" \
+      --argjson aur_rpc_attempts "$((ACQUISITION_AUR_RPC_MAX_RETRIES + 1))" \
+      --argjson aur_rpc_delay "$ACQUISITION_AUR_RPC_RETRY_DELAY_SECONDS" \
+      --argjson aur_helper_enabled "$ACQUISITION_AUR_HELPER_ENABLED" \
+      --argjson aur_helper_retries "$ACQUISITION_AUR_HELPER_MAX_RETRIES" \
+      --argjson aur_helper_attempts "$((ACQUISITION_AUR_HELPER_MAX_RETRIES + 1))" \
+      --argjson aur_helper_delay "$ACQUISITION_AUR_HELPER_RETRY_DELAY_SECONDS" \
+      '{
+        pacman_repo: {
+          implemented: true,
+          strategy: "mirror_failover",
+          executor: "pacman via temporary pacman config",
+          enabled: ($mirrors_enabled == 1),
+          max_failovers: $mirror_failovers,
+          max_attempts: $mirror_attempts,
+          retry_delay_seconds: $mirror_delay,
+          retryable_failures: ["download", "dns", "timeout", "connection_reset", "connection_refused"],
+          terminal_failures: ["signature", "integrity", "keyring", "dependency", "lock", "disk", "conflict"],
+          config: ["mirrors.enabled", "mirrors.max_failovers", "mirrors.retry_delay_seconds"]
+        },
+        aur_rpc: {
+          implemented: true,
+          strategy: "bounded_transient_retry",
+          executor: "synsyu_core direct AUR RPC source classification",
+          enabled: ($aur_rpc_enabled == 1),
+          max_retries: $aur_rpc_retries,
+          max_attempts: $aur_rpc_attempts,
+          retry_delay_seconds: $aur_rpc_delay,
+          retryable_failures: ["timeout", "connect", "HTTP 429", "HTTP 408", "HTTP 5xx"],
+          terminal_failures: ["HTTP 400", "HTTP 404", "non-transient RPC failure"],
+          config: ["acquisition.aur_rpc.enabled", "acquisition.aur_rpc.max_retries", "acquisition.aur_rpc.retry_delay_seconds"],
+          legacy_fallback: "aur.max_retries is used only when acquisition.aur_rpc.max_retries is unset"
+        },
+        aur_helper: {
+          implemented: true,
+          strategy: "bounded_transient_retry",
+          executor: "selected AUR helper through Bash execution",
+          enabled: ($aur_helper_enabled == 1),
+          max_retries: $aur_helper_retries,
+          max_attempts: $aur_helper_attempts,
+          retry_delay_seconds: $aur_helper_delay,
+          retryable_failures: ["dns", "timeout", "tls", "connect", "Git transport", "HTTP 5xx"],
+          terminal_failures: ["PKGBUILD", "checksum", "signature", "dependency", "conflict", "build"],
+          config: ["acquisition.aur_helper.enabled", "acquisition.aur_helper.max_retries", "acquisition.aur_helper.retry_delay_seconds"]
+        },
+        pkgbuild_sources: {
+          implemented: false,
+          strategy: "deferred_source_fallback",
+          note: "PKGBUILD upstream source fallback is separate from pacman mirror failover"
+        },
+        flatpak: {
+          implemented: false,
+          strategy: "tool_owned",
+          note: "No Syn-Syu bounded retry policy is applied yet"
+        },
+        fwupd: {
+          implemented: false,
+          strategy: "tool_owned",
+          note: "No Syn-Syu bounded retry policy is applied yet"
+        }
+      }'
+    return 0
+  fi
+
+  printf 'Source-aware bounded acquisition policy:\n'
+  printf '  pacman repo   : mirror failover, enabled=%s, max_attempts=%s, delay=%ss\n' "$MIRRORS_ENABLED" "$((MIRRORS_MAX_FAILOVERS + 1))" "$MIRRORS_RETRY_DELAY_SECONDS"
+  printf '  AUR RPC       : direct-core transient retry, enabled=%s, max_attempts=%s, delay=%ss\n' "$ACQUISITION_AUR_RPC_ENABLED" "$((ACQUISITION_AUR_RPC_MAX_RETRIES + 1))" "$ACQUISITION_AUR_RPC_RETRY_DELAY_SECONDS"
+  printf '                  legacy fallback: aur.max_retries only when acquisition.aur_rpc.max_retries is unset\n'
+  printf '  AUR helper    : helper-specific transient retry, enabled=%s, max_attempts=%s, delay=%ss\n' "$ACQUISITION_AUR_HELPER_ENABLED" "$((ACQUISITION_AUR_HELPER_MAX_RETRIES + 1))" "$ACQUISITION_AUR_HELPER_RETRY_DELAY_SECONDS"
+  printf '  PKGBUILD src  : deferred; not treated as mirror failover\n'
+  printf '  Flatpak/fwupd : tool-owned behavior; no Syn-Syu retry policy yet\n'
+}
+
 #--- cmd_help
 cmd_help() {
   cat <<'EOF'
@@ -767,6 +1167,8 @@ Commands:
   group <name>      Update package group defined in groups.toml
   helper <name>     Use the specified AUR helper for this run
   helpers           Detect available AUR helpers and set default
+  mirrors           Show ranked pacman mirror candidates from manifest
+  acquisition       Show source-aware acquisition policies by channel
   inspect <pkg>     Show manifest detail for package
   check             Summarize manifest contents
   clean             Prune caches and remove orphans
@@ -788,9 +1190,11 @@ Flags:
   --verbose         Stream logs to stderr
   --groups <path>   Override group configuration path
   --quiet, -q       Suppress non-essential output
-  --json            JSON output for check/inspect
+  --json            JSON output where supported (check/inspect/mirrors/acquisition)
   --edit-plan       Open the plan file in \$EDITOR after creation
   --offline         Skip network calls during manifest build (no AUR detection)
+  --mirrors         Enable repo mirror failover for this run
+  --no-mirrors      Disable repo mirror failover for this run
   --full-path       Expand tilde/relative manifest path to full absolute path
   --confirm         Ask for confirmation in helpers (drop --noconfirm)
   --noconfirm       Force non-interactive operations (default)

@@ -36,6 +36,7 @@ mod fwupd;
 mod log_api;
 mod logger;
 mod manifest;
+mod mirrors;
 mod package_info;
 mod pacman;
 mod plan;
@@ -58,7 +59,8 @@ use flatpak::collect_flatpak;
 use fwupd::collect_fwupd;
 use log_api::{log_emit, log_hash, log_init, log_prune};
 use logger::Logger;
-use manifest::{build_manifest, write_manifest, ManifestDocument};
+use manifest::{build_manifest, write_manifest, ManifestDocument, NetworkState};
+use mirrors::collect_mirror_state;
 use pacman::{
     enumerate_installed_packages, query_aur_helper_versions, query_repo_versions, InstalledPackage,
 };
@@ -95,6 +97,8 @@ enum Commands {
     Updates(UpdatesCommand),
     /// Logging helper commands.
     Logs(LogsCommand),
+    /// Inspect pacman mirror candidates and probe state.
+    Mirrors(MirrorsCommand),
 }
 
 /// Core manifest-building arguments (also used as default when no subcommand is given).
@@ -121,6 +125,18 @@ struct CoreArgs {
     /// Disable network access (skip AUR origin detection).
     #[arg(long, action = ArgAction::SetTrue)]
     offline: bool,
+    /// Skip AUR origin detection.
+    #[arg(long = "no-aur", action = ArgAction::SetTrue)]
+    no_aur: bool,
+    /// Skip repository network probes.
+    #[arg(long = "no-repo", action = ArgAction::SetTrue)]
+    no_repo: bool,
+    /// Force mirror discovery and probing for this run.
+    #[arg(long = "mirrors", action = ArgAction::SetTrue)]
+    mirrors: bool,
+    /// Skip mirror discovery and probing for this run.
+    #[arg(long = "no-mirrors", action = ArgAction::SetTrue)]
+    no_mirrors: bool,
     /// Include firmware state via fwupdmgr in the manifest.
     #[arg(long = "with-fwupd", action = ArgAction::SetTrue)]
     with_fwupd: bool,
@@ -218,6 +234,26 @@ struct LogsCommand {
     path: Option<PathBuf>,
 }
 
+/// Mirror inspection command.
+#[derive(Debug, Parser, Clone)]
+struct MirrorsCommand {
+    /// Override configuration file path.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+    /// Emit JSON output.
+    #[arg(long, action = ArgAction::SetTrue)]
+    json: bool,
+    /// Do not perform HTTP probes; show discovered candidates only.
+    #[arg(long = "no-probe", action = ArgAction::SetTrue)]
+    no_probe: bool,
+    /// Force mirror discovery and probing for this run.
+    #[arg(long = "mirrors", action = ArgAction::SetTrue)]
+    mirrors: bool,
+    /// Skip network probing entirely.
+    #[arg(long, action = ArgAction::SetTrue)]
+    offline: bool,
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
@@ -239,6 +275,7 @@ async fn run() -> Result<ExitCode> {
             Commands::Space(space_cmd) => run_space(space_cmd).await,
             Commands::Updates(up_cmd) => run_updates(up_cmd),
             Commands::Logs(log_cmd) => run_logs(log_cmd),
+            Commands::Mirrors(mirror_cmd) => run_mirrors(mirror_cmd).await,
         };
     }
 
@@ -402,7 +439,13 @@ async fn run_core(args: &CoreArgs) -> Result<ExitCode> {
     );
 
     let mut installed = enumerate_installed_packages().await?;
-    classify_aur_packages(&mut installed, args.offline, &logger).await;
+    classify_aur_packages(
+        &mut installed,
+        args.offline || args.no_aur,
+        &config,
+        &logger,
+    )
+    .await;
     logger.info(
         "PACKAGES",
         format!("Detected {} installed packages", installed.len()),
@@ -422,6 +465,18 @@ async fn run_core(args: &CoreArgs) -> Result<ExitCode> {
     }
 
     let mut document = build_manifest(&selected, &logger).await?;
+    let mut mirror_config = config.mirrors.clone();
+    if args.mirrors {
+        mirror_config.enabled = true;
+    }
+    if args.no_mirrors {
+        mirror_config.enabled = false;
+    }
+    let mirror_state =
+        collect_mirror_state(&mirror_config, &logger, args.offline || args.no_repo).await;
+    document.network = Some(NetworkState {
+        mirrors: mirror_state,
+    });
 
     if enable_flatpak {
         match collect_flatpak(&logger).await {
@@ -502,10 +557,86 @@ fn run_config(cmd: &ConfigCommand) -> Result<ExitCode> {
             report.space_min_free_bytes, report.space_policy
         );
         println!(
+            "Mirrors : enabled={} probe={} candidates={} failovers={}",
+            report.mirrors_enabled,
+            report.mirrors_probe,
+            report.mirrors_max_candidates,
+            report.mirrors_max_failovers
+        );
+        println!(
+            "Acquire : aur_rpc={} retries={} delay={}s aur_helper={} retries={} delay={}s",
+            report.acquisition_aur_rpc_enabled,
+            report.acquisition_aur_rpc_max_retries,
+            report.acquisition_aur_rpc_retry_delay_seconds,
+            report.acquisition_aur_helper_enabled,
+            report.acquisition_aur_helper_max_retries,
+            report.acquisition_aur_helper_retry_delay_seconds
+        );
+        println!(
             "Apps    : flatpak={} fwupd={}",
             report.applications_flatpak, report.applications_fwupd
         );
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn run_mirrors(cmd: &MirrorsCommand) -> Result<ExitCode> {
+    let config = SynsyuConfig::load_from_optional_path(cmd.config.as_deref())?;
+    let mut mirror_config = config.mirrors.clone();
+    if cmd.mirrors {
+        mirror_config.enabled = true;
+    }
+    if cmd.no_probe {
+        mirror_config.probe = false;
+    }
+    let logger = Logger::new(None, false)?;
+    let state = collect_mirror_state(&mirror_config, &logger, cmd.offline).await;
+
+    if cmd.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&state).unwrap_or_else(|_| "{}".to_string())
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    println!("Mirror subsystem: {}", state.status);
+    println!("Enabled: {}", state.enabled);
+    println!("Source: {}", state.source);
+    if let Some(path) = &state.source_path {
+        println!("Source path: {path}");
+    }
+    println!("Pacman config: {}", state.pacman_conf_path);
+    println!(
+        "Usable candidates: {}/{}",
+        state.usable_count, state.candidate_count
+    );
+    println!(
+        "Bounds: max_failovers={} retry_delay_seconds={} timeout_seconds={}",
+        state.max_failovers, state.retry_delay_seconds, state.timeout_seconds
+    );
+    if let Some(reason) = &state.reason {
+        println!("Reason: {reason}");
+    }
+    for candidate in state.candidates {
+        let latency = candidate
+            .latency_ms
+            .map(|ms| format!("{ms}ms"))
+            .unwrap_or_else(|| "-".to_string());
+        let reason = candidate.reason.unwrap_or_default();
+        println!(
+            "{}. [{}] outcome={} freshness={} usable={} latency={} {} {}",
+            candidate.rank,
+            candidate.status,
+            candidate.outcome,
+            candidate.freshness,
+            candidate.usable,
+            latency,
+            candidate.server,
+            reason
+        );
+    }
+
     Ok(ExitCode::SUCCESS)
 }
 
@@ -939,7 +1070,12 @@ fn print_summary(document: &ManifestDocument) {
     );
 }
 
-async fn classify_aur_packages(packages: &mut [InstalledPackage], offline: bool, logger: &Logger) {
+async fn classify_aur_packages(
+    packages: &mut [InstalledPackage],
+    offline: bool,
+    config: &SynsyuConfig,
+    logger: &Logger,
+) {
     let mut candidates = Vec::new();
     for pkg in packages.iter() {
         if pkg
@@ -958,7 +1094,16 @@ async fn classify_aur_packages(packages: &mut [InstalledPackage], offline: bool,
         logger.info("AUR", "Offline flag set; skipping AUR origin detection.");
         return;
     }
-    match pacman::aur_presence(&candidates, offline).await {
+    match pacman::aur_presence(
+        &candidates,
+        offline,
+        &config.aur,
+        &config.acquisition.aur_rpc,
+        config.resolved_aur_rpc_max_retries(),
+        logger,
+    )
+    .await
+    {
         Ok(found) => {
             if found.is_empty() {
                 logger.info("AUR", "No AUR matches found for foreign packages.");
