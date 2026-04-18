@@ -50,7 +50,7 @@ parse_cli() {
         NO_REPO=1
         shift
         ;;
-      --verbose)
+      --verbose|-v)
         LOG_VERBOSE=1
         shift
         ;;
@@ -80,11 +80,11 @@ parse_cli() {
         JSON_OUTPUT=1
         shift
         ;;
-      --confirm)
+      --confirm|-c)
         NO_CONFIRM=0
         shift
         ;;
-      --noconfirm)
+      --noconfirm|-nc)
         NO_CONFIRM=1
         shift
         ;;
@@ -127,7 +127,7 @@ parse_cli() {
         MIN_FREE_SPACE_OVERRIDE_BYTES="$converted"
         shift 2
         ;;
-      --with-flatpak)
+      --with-flatpak|-w-fp)
         APPLICATIONS_FLATPAK=1
         APPLICATIONS_FLATPAK_CLI=1
         shift
@@ -137,7 +137,7 @@ parse_cli() {
         APPLICATIONS_FLATPAK_CLI=0
         shift
         ;;
-      --with-fwupd)
+      --with-fwupd|-w-fw)
         APPLICATIONS_FWUPD=1
         APPLICATIONS_FWUPD_CLI=1
         shift
@@ -201,7 +201,7 @@ parse_post_command_flags() {
   local -a rest=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --with-flatpak)
+      --with-flatpak|-w-fp)
         APPLICATIONS_FLATPAK=1
         APPLICATIONS_FLATPAK_CLI=1
         ;;
@@ -209,7 +209,7 @@ parse_post_command_flags() {
         APPLICATIONS_FLATPAK=0
         APPLICATIONS_FLATPAK_CLI=0
         ;;
-      --with-fwupd)
+      --with-fwupd|-w-fw)
         APPLICATIONS_FWUPD=1
         APPLICATIONS_FWUPD_CLI=1
         ;;
@@ -234,8 +234,14 @@ parse_post_command_flags() {
       --rebuild)
         REBUILD_MANIFEST=1
         ;;
-      --verbose)
+      --verbose|-v)
         LOG_VERBOSE=1
+        ;;
+      --confirm|-c)
+        NO_CONFIRM=0
+        ;;
+      --noconfirm|-nc)
+        NO_CONFIRM=1
         ;;
       --full-path)
         FULL_PATH=1

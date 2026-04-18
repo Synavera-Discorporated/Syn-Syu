@@ -374,6 +374,9 @@ dispatch_command() {
     helpers)
       cmd_helpers
       ;;
+    self-update|selfupdate)
+      cmd_self_update
+      ;;
     mirrors)
       cmd_mirrors
       ;;
@@ -1010,6 +1013,89 @@ cmd_helpers() {
   fi
 }
 
+#--- cmd_self_update
+cmd_self_update() {
+  local repo_url="${SYN_SYU_SELF_UPDATE_REPO:-https://github.com/Synavera-Discorporated/Syn-Syu.git}"
+  local ref="${SYN_SYU_SELF_UPDATE_REF:-}"
+  local tmp_parent clone_dir
+  tmp_parent="$(mktemp -d "${TMPDIR:-/tmp}/synsyu_self_update_XXXXXX")"
+  clone_dir="$tmp_parent/Syn-Syu"
+
+  local -a clone_args=(clone --depth 1)
+  if [ -n "$ref" ]; then
+    clone_args+=(--branch "$ref")
+  fi
+  clone_args+=("$repo_url" "$clone_dir")
+
+  log_info "SELFUPDATE" "Preparing self-update from $repo_url${ref:+ ref $ref}"
+  if [ "$DRY_RUN" = "1" ]; then
+    local clone_preview="git"
+    local arg
+    for arg in "${clone_args[@]}"; do
+      clone_preview+=" $arg"
+    done
+    printf 'Self-update dry-run:\n'
+    printf '  clone: %s\n' "$clone_preview"
+    printf '  build: makepkg -sif%s\n' "$([ "$NO_CONFIRM" = "1" ] && printf ' --noconfirm')"
+    printf '  source: %s\n' "$repo_url"
+    if [ -n "$ref" ]; then
+      printf '  ref: %s\n' "$ref"
+    fi
+    rmdir "$tmp_parent" 2>/dev/null || true
+    return 0
+  fi
+
+  if [ "${OFFLINE:-0}" = "1" ]; then
+    log_error "SELFUPDATE" "Offline mode active; cannot self-update from GitHub"
+    rmdir "$tmp_parent" 2>/dev/null || true
+    return 1
+  fi
+  if ! command -v git >/dev/null 2>&1; then
+    log_error "SELFUPDATE" "git is required for self-update"
+    rmdir "$tmp_parent" 2>/dev/null || true
+    return 1
+  fi
+  if ! command -v makepkg >/dev/null 2>&1; then
+    log_error "SELFUPDATE" "makepkg is required for self-update"
+    rmdir "$tmp_parent" 2>/dev/null || true
+    return 1
+  fi
+
+  if ! git "${clone_args[@]}"; then
+    local status=$?
+    log_error "SELFUPDATE" "Failed to clone self-update source from $repo_url"
+    rm -rf "$tmp_parent"
+    return "$status"
+  fi
+
+  local commit
+  commit="$(git -C "$clone_dir" rev-parse --short=12 HEAD 2>/dev/null || true)"
+  if [ -n "$commit" ]; then
+    log_info "SELFUPDATE" "Building Syn-Syu self-update from commit $commit"
+  fi
+
+  local -a makepkg_args=(-sif)
+  if [ "$NO_CONFIRM" = "1" ]; then
+    makepkg_args+=(--noconfirm)
+  fi
+
+  set +e
+  (cd "$clone_dir" && makepkg "${makepkg_args[@]}")
+  local status=$?
+  set -e
+  rm -rf "$tmp_parent"
+
+  if [ "$status" -ne 0 ]; then
+    log_error "SELFUPDATE" "Self-update failed during makepkg install (exit $status)"
+    return "$status"
+  fi
+
+  log_info "SELFUPDATE" "Self-update completed successfully${commit:+ from commit $commit}"
+  if [ "${QUIET:-0}" != "1" ]; then
+    printf 'Syn-Syu self-update completed%s.\n' "${commit:+ from commit $commit}"
+  fi
+}
+
 #--- cmd_mirrors
 cmd_mirrors() {
   manifest_require
@@ -1167,6 +1253,7 @@ Commands:
   group <name>      Update package group defined in groups.toml
   helper <name>     Use the specified AUR helper for this run
   helpers           Detect available AUR helpers and set default
+  self-update       Update Syn-Syu from the GitHub repository via makepkg
   mirrors           Show ranked pacman mirror candidates from manifest
   acquisition       Show source-aware acquisition policies by channel
   inspect <pkg>     Show manifest detail for package
@@ -1187,7 +1274,7 @@ Flags:
   --dry-run         Simulate actions without applying
   --no-aur          Disable AUR operations
   --no-repo         Disable repo operations
-  --verbose         Stream logs to stderr
+  --verbose, -v     Stream logs to stderr
   --groups <path>   Override group configuration path
   --quiet, -q       Suppress non-essential output
   --json            JSON output where supported (check/inspect/mirrors/acquisition)
@@ -1196,17 +1283,19 @@ Flags:
   --mirrors         Enable repo mirror failover for this run
   --no-mirrors      Disable repo mirror failover for this run
   --full-path       Expand tilde/relative manifest path to full absolute path
-  --confirm         Ask for confirmation in helpers (drop --noconfirm)
-  --noconfirm       Force non-interactive operations (default)
+  --confirm, -c     Ask for confirmation in helpers (drop --noconfirm)
+  --noconfirm, -nc  Force non-interactive operations (default)
   --helper <name>   Force a specific AUR helper
   --strict          Fail plan when any source reports errors
   --include <regex> Include only packages matching regex (repeatable)
   --exclude <regex> Exclude packages matching regex (repeatable)
   --min-free-gb <N> Override required free space buffer in gigabytes
   --batch <N>       Batch size for repo installs (default from config or 10)
-  --with-flatpak    Include Flatpak updates in manifest and sync
+  --with-flatpak, -w-fp
+                    Include Flatpak updates in manifest and sync
   --no-flatpak      Skip Flatpak updates (overrides config/manifest)
-  --with-fwupd      Include firmware updates in manifest and sync
+  --with-fwupd, -w-fw
+                    Include firmware updates in manifest and sync
   --no-fwupd        Skip firmware updates (overrides config/manifest)
 EOF
 }

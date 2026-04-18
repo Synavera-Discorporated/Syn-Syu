@@ -150,6 +150,7 @@ synsyu fwupd      # Apply firmware updates via fwupdmgr
 synsyu sync --with-flatpak --with-fwupd  # include app/firmware updates in one sweep
 synsyu helpers    # List detected AUR helpers
 synsyu helper <name>  # Set helper for this session (or persist with helpers.sh)
+synsyu self-update # Clone GitHub and reinstall Syn-Syu via makepkg
 synsyu mirrors    # Show ranked mirror candidates recorded in the manifest
 synsyu acquisition # Show source-aware bounded acquisition policy
 synsyu config     # Show config path info
@@ -159,8 +160,21 @@ synsyu version    # Show version/build info
 synsyu help       # Usage help
 ```
 
+Common aliases are available for frequent flags: `-v` for `--verbose`, `-c`
+for `--confirm`, `-nc` for `--noconfirm`, `-w-fp` for `--with-flatpak`, and
+`-w-fw` for `--with-fwupd`.
+
 Use `syn-syu --help` for the full command set, including manifest inspection,
 logging, and AUR-only or repo-only operations.
+
+Until Syn-Syu is published through a package repository, `syn-syu self-update`
+can update Syn-Syu from GitHub. It clones
+`https://github.com/Synavera-Discorporated/Syn-Syu.git` into a temporary build
+directory and runs the repository `PKGBUILD` with `makepkg -sif`, preserving
+pacman ownership instead of overwriting installed files directly. Use
+`syn-syu self-update --dry-run` to preview the operation. Advanced testers can
+override the source with `SYN_SYU_SELF_UPDATE_REPO` and
+`SYN_SYU_SELF_UPDATE_REF`.
 
 The Rust binary is also available directly:
 

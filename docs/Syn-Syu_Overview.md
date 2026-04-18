@@ -119,6 +119,7 @@ failures stop immediately.
 | `syn-syu export` | Export repo/AUR package lists for replication. |
 | `syn-syu helpers` | List detected AUR helpers. |
 | `syn-syu helper <name>` | Set helper for this session (persist with helpers.sh). |
+| `syn-syu self-update` | Clone GitHub and reinstall Syn-Syu via the repo PKGBUILD. |
 | `syn-syu mirrors` | Show ranked pacman mirror candidates recorded in the manifest. |
 | `syn-syu acquisition` | Show source-aware bounded acquisition policies by channel. |
 | `syn-syu config` | Show config path info. |
@@ -133,8 +134,9 @@ Use `syn-syu --help` for the full flag list.
 - `--json` – machine-readable output where supported, including `check`,
   `inspect`, `mirrors`, and `acquisition`.
 - `--quiet`/`-q` – suppress non-essential output; logs still written.
-- `--confirm`/`--noconfirm` – toggle interactive confirmations passed to helpers
-  and pacman (default is non-interactive).
+- `--verbose`/`-v` – stream logs to stderr.
+- `--confirm`/`-c` and `--noconfirm`/`-nc` – toggle interactive confirmations
+  passed to helpers and pacman (default is non-interactive).
 - `--helper <name>` – force a specific AUR helper instead of auto-detection.
 - `--include <regex>` / `--exclude <regex>` – filter packages by name during
   `sync` (both flags repeatable; evaluated as Bash regex).
@@ -142,8 +144,9 @@ Use `syn-syu --help` for the full flag list.
   config or `10`.
 - `--mirrors` / `--no-mirrors` – enable or disable repo mirror failover for the
   current run without changing config.
-- `--with-flatpak` / `--with-fwupd` – opt into Flatpak and firmware updates
-  during manifest generation and `sync` (also available as standalone commands).
+- `--with-flatpak`/`-w-fp` and `--with-fwupd`/`-w-fw` – opt into Flatpak and
+  firmware updates during manifest generation and `sync` (also available as
+  standalone commands).
 - `plan` flags: `--json`, `--strict`, `--offline`, `--no-aur`, `--no-repo`,
   `--with-flatpak`, `--with-fwupd`, and `--plan/--manifest` path overrides.
 
@@ -194,6 +197,12 @@ Use `syn-syu --help` for the full flag list.
 - **Export packages** – `syn-syu export [--json|--plain]` dumps the explicitly
   installed repo/AUR packages, making it easy to replicate an environment or
   commit your package set to version control.
+- **Self-update from GitHub** – `syn-syu self-update` clones the upstream GitHub
+  repository into a temporary build directory and runs `makepkg -sif` against
+  the checked-out `PKGBUILD`. This is intentionally package-manager aware:
+  Syn-Syu does not overwrite `/usr/bin` or `/usr/lib/syn-syu` directly. Use
+  `--dry-run` to preview, or set `SYN_SYU_SELF_UPDATE_REPO` /
+  `SYN_SYU_SELF_UPDATE_REF` for testing a fork, branch, or tag.
 
 ## Configuration Files
 

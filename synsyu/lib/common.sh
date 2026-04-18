@@ -88,3 +88,33 @@ print_failed_update_summary() {
     fi
   done
 }
+
+#--- check_pacnew
+check_pacnew() {
+  if [ "${CLEAN_CHECK_PACNEW:-1}" != "1" ]; then
+    log_info "PACNEW" "pacnew scan disabled by configuration"
+    return 0
+  fi
+
+  local output=""
+  if command -v pacdiff >/dev/null 2>&1; then
+    output="$(pacdiff -o 2>/dev/null || true)"
+  else
+    output="$(find /etc -xdev -type f \( -name '*.pacnew' -o -name '*.pacsave' \) -print 2>/dev/null || true)"
+  fi
+
+  if [ -z "$output" ]; then
+    log_info "PACNEW" "No pacnew/pacsave files detected"
+    return 0
+  fi
+
+  log_warn "PACNEW" "pacnew/pacsave files require review"
+  if [ "${QUIET:-0}" != "1" ]; then
+    printf -- '-> pacnew/pacsave files require review:\n'
+    while IFS= read -r path; do
+      [ -z "$path" ] && continue
+      printf '   - %s\n' "$path"
+    done <<<"$output"
+  fi
+  return 0
+}
